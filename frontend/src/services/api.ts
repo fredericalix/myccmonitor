@@ -1,4 +1,11 @@
-import type { Me, Monitor, Org, WebhookConfig } from "./types";
+import type {
+  CreateGroupInput,
+  GroupView,
+  Me,
+  Monitor,
+  Org,
+  WebhookConfig,
+} from "./types";
 
 export class ApiError extends Error {
   status: number;
@@ -46,4 +53,23 @@ export const api = {
   listMonitors: (ccOrgId: string) =>
     request<Monitor[]>(`/api/orgs/${encodeURIComponent(ccOrgId)}/monitors`),
   logout: () => request<void>("/auth/logout", { method: "POST", body: "{}" }),
+
+  listGroups: () => request<GroupView[]>("/api/groups"),
+  createGroup: (input: CreateGroupInput) =>
+    request<GroupView>("/api/groups", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getGroup: (id: string) => request<GroupView>(`/api/groups/${id}`),
+  deleteGroup: (id: string) =>
+    request<void>(`/api/groups/${id}`, { method: "DELETE" }),
+  addGroupMember: (groupId: string, monitorId: string) =>
+    request<void>(`/api/groups/${groupId}/members/${monitorId}`, {
+      method: "POST",
+      body: "{}",
+    }),
+  removeGroupMember: (groupId: string, monitorId: string) =>
+    request<void>(`/api/groups/${groupId}/members/${monitorId}`, {
+      method: "DELETE",
+    }),
 };

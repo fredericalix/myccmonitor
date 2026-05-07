@@ -1,2 +1,5 @@
-//! Monitor groups: CRUD, auto-grouping rules (name/tags/kinds/env), state rollup.
-//! Filled in Phase 5.
+//! Monitor groups: CRUD, auto-grouping rules (name_pattern, kinds), state rollup.
+
+pub mod rollup;
+
+pub use rollup::{GroupView, compute_view};

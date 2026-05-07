@@ -74,3 +74,41 @@ export interface MetricSnapshot {
   mem: number | null;
   ts: string;
 }
+
+export interface AutoRules {
+  name_pattern?: string;
+  kinds?: string[];
+}
+
+export type GroupRolledState =
+  | "ok"
+  | "warning"
+  | "critical"
+  | "unknown";
+
+export interface StateBreakdown {
+  ok: number;
+  warning: number;
+  critical: number;
+  unknown: number;
+  total: number;
+}
+
+export interface GroupView {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string | null;
+  auto_rules: AutoRules | null;
+  created_at: string;
+  updated_at: string;
+  member_ids: string[];
+  rolled_state: GroupRolledState;
+  state_breakdown: StateBreakdown;
+}
+
+export interface CreateGroupInput {
+  name: string;
+  description?: string;
+  auto_rules?: AutoRules;
+}

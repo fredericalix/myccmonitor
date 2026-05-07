@@ -49,12 +49,20 @@ export default function OrgsPage() {
         <h1 className="text-3xl font-bold tracking-tight text-slate-900">
           Your organisations
         </h1>
-        <Link
-          href="/"
-          className="text-sm text-slate-500 hover:text-slate-900"
-        >
-          ← Home
-        </Link>
+        <div className="flex items-center gap-4 text-sm">
+          <Link
+            href="/groups"
+            className="text-slate-600 hover:text-slate-900"
+          >
+            Groups →
+          </Link>
+          <Link
+            href="/"
+            className="text-slate-500 hover:text-slate-900"
+          >
+            ← Home
+          </Link>
+        </div>
       </div>
 
       {loading && <p className="text-sm text-slate-500">Loading…</p>}

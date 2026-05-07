@@ -182,6 +182,7 @@ async fn main() -> Result<()> {
         .route("/health", get(health))
         .merge(auth::router())
         .merge(handlers::api_router())
+        .merge(handlers::groups_router())
         .merge(webhooks::router())
         .merge(ws::router())
         .layer(session_layer)

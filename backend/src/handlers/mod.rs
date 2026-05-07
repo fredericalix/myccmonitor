@@ -2,5 +2,7 @@
 //! /webhooks/cc/:token in `crate::webhooks::receiver`, /ws in `crate::ws`.
 
 pub mod api;
+pub mod groups;
 
 pub use api::router as api_router;
+pub use groups::router as groups_router;
