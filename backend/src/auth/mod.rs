@@ -1,2 +1,7 @@
-//! OAuth 1.0a Clever Cloud — login flow, token signing, AES-GCM encryption.
-//! Filled in Phase 1.
+//! OAuth 1.0a Clever Cloud login + AES-GCM token encryption + session handlers.
+
+pub mod encryption;
+pub mod oauth;
+pub mod routes;
+
+pub use routes::router;

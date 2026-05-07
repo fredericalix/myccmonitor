@@ -14,20 +14,30 @@ myccmonitor watches the Clever Cloud apps and addons of every signed-in user, an
 
 ```bash
 git clone <this repo> && cd myccmonitor
-cp .env.example .env                              # fill APP_ENCRYPTION_KEY (openssl rand -hex 32)
+cp .env.example .env
 
 # One-time host prerequisite: `protoc` is required to build the `pulsar` crate.
 brew install protobuf                             # macOS; on Linux use your package manager
 
-docker compose -f docker-compose.dev.yml up -d    # Postgres + Pulsar standalone
+# Generate the at-rest token encryption key
+openssl rand -hex 32                              # paste into APP_ENCRYPTION_KEY in .env
 
-cd backend
-sqlx migrate run                                  # once Phase 1 lands
-cargo run                                         # backend on :8080
+# Create a Clever Cloud OAuth consumer for myccmonitor (one per environment).
+# The public clever-tools key does NOT accept arbitrary callback URLs.
+clever oauth-consumers create myccmonitor-dev \
+    --description "myccmonitor (dev)" \
+    --url        "http://localhost:3000" \
+    --base-url   "http://localhost:3000" \
+    --rights all
+clever oauth-consumers get <key-from-create> --with-secret
+# Paste the key + secret into CC_CONSUMER_KEY / CC_CONSUMER_SECRET in .env.
 
-cd frontend
-npm install                                       # already done if you scaffolded
-npm run dev                                       # http://localhost:3000
+docker compose -f docker-compose.dev.yml up -d postgres   # Phase 1: Postgres only
+# (add `pulsar` from Phase 2 onwards: `docker compose ... up -d`)
+
+cd backend && cargo run                           # runs sqlx migrations on boot, listens :8080
+
+cd frontend && npm run dev                        # http://localhost:3000
 ```
 
 OAuth callback in dev: `PUBLIC_BASE_URL=http://localhost:3000`. The Next.js dev server rewrites `/auth/*`, `/api/*`, `/ws`, `/webhooks/*` to `BACKEND_INTERNAL_URL` (defaults to `http://localhost:8080`).
@@ -292,13 +302,13 @@ webhook_dedup (                              -- cross-instance dedup, 60s window
 
 Lift from `myccmetrics/backend-server/src/auth/oauth.rs`. Do not reimplement.
 
-1. `GET /auth/login` → `request_temporary_token()` → 302 to `https://api.clever-cloud.com/v2/oauth/authorize?oauth_token=…`
+1. `GET /auth/login` → `request_temporary_token()` → 303 to `https://api.clever-cloud.com/v2/oauth/authorize?oauth_token=…`. The request token *secret* is encrypted (AES-GCM) into a 5-min HTTP-only cookie `oauth_state`, so the callback works without prior session state.
 2. CC redirects to `GET /auth/callback?oauth_token=…&oauth_verifier=…`
 3. `exchange_access_token()` → `(access_token, access_secret)`
-4. Signed `GET /v2/self` → upsert `users` row with AES-256-GCM-encrypted tokens (key `APP_ENCRYPTION_KEY`, 32 bytes hex)
-5. Session set via tower-sessions, redirect to `/orgs`
+4. Signed `GET /v2/self` → upsert `users` row with AES-256-GCM-encrypted tokens. The `oauth_nonce` column holds the two AES-GCM nonces concatenated (`token_nonce[12] || secret_nonce[12]`).
+5. Session set via tower-sessions (`session.insert("user_id", user.id)`); 303 to `${PUBLIC_BASE_URL}/orgs`.
 
-Consumer key/secret are public (cf. `clever-tools`). Stored in env.
+**Consumer key/secret are NOT public.** myccmonitor needs its own OAuth consumer per environment, registered with the right callback URL — the public `clever-tools` key returns CC error 13502 *"OAuth callback is invalid"* when you try to use an arbitrary callback. Create it with `clever oauth-consumers create` (see §2 Quick start).
 
 ## 8. Webhook lifecycle
 
@@ -662,4 +672,5 @@ SELECT pid, query FROM pg_stat_activity WHERE query LIKE '%LISTEN%';
 Each phase committed in turn. Source of truth is `git log`; this list is a quick scan of where we are.
 
 - ✅ **Phase 0** — Bootstrap. `cargo init backend` (compiles, all deps including pulsar resolve), `npx create-next-app frontend` (Next 16, React 19, Tailwind v4, reactflow + dagre + zustand installed), `docker-compose.dev.yml` (Postgres 16 + Pulsar 3.3.2 standalone, healthchecks), `.env.example`, `.gitignore`, `clevercloud/README.md` (CC bootstrap runbook), `backend/clevercloud/rust.json`. Backend module folders stubbed with `mod.rs` placeholders pointing at the phase that fills them. Host prerequisite: `protoc` (Homebrew `protobuf`).
-- ⏳ **Phase 1** — OAuth login + sessions + DB users + AES-GCM token encryption.
+- ✅ **Phase 1** — OAuth login + sessions + DB users + AES-GCM token encryption. SQL migration `users` table; AES-256-GCM helpers (encrypt/decrypt) lifted from myccmetrics; OAuth 1.0a 3-leg flow (`request_temporary_token`, `exchange_access_token`, `sign_api_request`) lifted; HTTP handlers `/auth/login`, `/auth/callback`, `/auth/logout`; tower-sessions Postgres store; cookie-based stash of the request_token_secret during the redirect. Smoke-tested: backend connects to Postgres, migrations apply, session store provisions itself, `/health` answers 200, `/auth/login` reaches CC and surfaces a clean error when the OAuth consumer is not configured. **Operator step**: run `clever oauth-consumers create` once per env (see §2) before the OAuth flow can succeed end-to-end.
+- ⏳ **Phase 2** — list orgs + auto-create webhook + Pulsar producer/consumer.

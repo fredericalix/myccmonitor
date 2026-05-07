@@ -1,40 +1,60 @@
 # Clever Cloud setup
 
-myccmonitor ships as **two CC apps** (backend + frontend) plus **two addons** (Postgres + Pulsar). Bootstrap with `clever-tools`:
+myccmonitor ships as **two CC apps** (backend + frontend) plus **two addons** (Postgres + Pulsar). Bootstrap with `clever-tools`.
+
+**Defaults** (apply to every command below):
+
+- Org: `orga_5d2b4f5b-434c-4ee4-927a-db6ebff63b50`
+- Run flavor: `XS`, build flavor: `S`
+- Backend: `--min-instances 2` in prod (multi-instance is required, see CLAUDE.md §16)
+- Frontend: `--min-instances 1`
 
 ```bash
 # Once, per environment (dev/prod). From the repo root.
 
-# 1. Login (interactive, OAuth)
+ORG=orga_5d2b4f5b-434c-4ee4-927a-db6ebff63b50
+
+# 1. Login (interactive)
 clever login
 
-# 2. Create the backend app
+# 2. Create the OAuth consumer for myccmonitor (callback whitelisting).
+#    The public clever-tools key does NOT accept arbitrary callbacks.
+clever oauth-consumers create myccmonitor-prod \
+    --description "myccmonitor (prod)" \
+    --url       "https://myccmonitor-frontend.cleverapps.io" \
+    --base-url  "https://myccmonitor-frontend.cleverapps.io" \
+    --rights all \
+    --org $ORG
+clever oauth-consumers get <key-from-create> --with-secret    # save these for step 5
+
+# 3. Create the backend app
 cd backend
-clever create --type rust myccmonitor-backend --org <orga-id>
-clever scale --min-instances 2 --max-instances 4 --flavor S    # multi-instance from day 1
+clever create --type rust myccmonitor-backend --org $ORG
+clever scale --flavor XS --build-flavor S --min-instances 2 --max-instances 4
 cd ..
 
-# 3. Create the frontend app
+# 4. Create the frontend app
 cd frontend
-clever create --type node myccmonitor-frontend --org <orga-id>
+clever create --type node myccmonitor-frontend --org $ORG
+clever scale --flavor XS --build-flavor S --min-instances 1
 cd ..
 
-# 4. Create addons and link them to the backend
-clever addon create postgresql-addon myccmonitor-pg --plan dev --org <orga-id>
-clever addon create addon-pulsar myccmonitor-pulsar --plan dev --org <orga-id>
+# 5. Create addons and link them to the backend
+clever addon create postgresql-addon myccmonitor-pg --plan dev --org $ORG
+clever addon create addon-pulsar myccmonitor-pulsar --plan dev --org $ORG
 clever service link-addon myccmonitor-pg --app myccmonitor-backend
 clever service link-addon myccmonitor-pulsar --app myccmonitor-backend
 
-# 5. Set env vars on the backend (consumer key/secret are public, encryption key MUST be unique per env)
-clever env --app myccmonitor-backend set CC_CONSUMER_KEY "T5nFjKeHH4AIlEveuGhB5S3xg8T19e"
-clever env --app myccmonitor-backend set CC_CONSUMER_SECRET "MgVMqTr6fWlf2M0tkC2MXOnhfqBWDT"
+# 6. Set env vars on the backend (paste the consumer key/secret from step 2)
+clever env --app myccmonitor-backend set CC_CONSUMER_KEY "<key>"
+clever env --app myccmonitor-backend set CC_CONSUMER_SECRET "<secret>"
 clever env --app myccmonitor-backend set APP_ENCRYPTION_KEY "$(openssl rand -hex 32)"
 clever env --app myccmonitor-backend set PUBLIC_BASE_URL "https://myccmonitor-frontend.cleverapps.io"
 
-# 6. Frontend env: tell Next.js where to proxy /api, /auth, /ws, /webhooks
+# 7. Frontend env: tell Next.js where to proxy /api, /auth, /ws, /webhooks
 clever env --app myccmonitor-frontend set BACKEND_INTERNAL_URL "https://myccmonitor-backend.cleverapps.io"
 
-# 7. Deploy
+# 8. Deploy
 cd backend && clever deploy --app myccmonitor-backend
 cd ../frontend && clever deploy --app myccmonitor-frontend
 ```
