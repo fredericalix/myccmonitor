@@ -1,2 +1,5 @@
 //! Clever Cloud API client (orgs, applications, addons, webhooks, metrics token).
-//! Filled in Phase 2.
+
+pub mod cc_client;
+
+pub use cc_client::{CcClient, CcOrganisation, SUBSCRIBED_EVENTS};

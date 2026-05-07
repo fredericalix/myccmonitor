@@ -47,6 +47,7 @@ url = "2"
 async-trait = "0.1"
 dashmap = "6"
 futures = "0.3"
+serde_bytes = "0.11"
 
 # OAuth 1.0a (Clever Cloud)
 hmac = "0.12"

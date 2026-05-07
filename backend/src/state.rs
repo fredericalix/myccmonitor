@@ -1,3 +1,4 @@
+use crate::bus::WebhookProducer;
 use crate::config::Config;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -7,4 +8,5 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     pub pool: PgPool,
     pub http: reqwest::Client,
+    pub bus: Arc<WebhookProducer>,
 }

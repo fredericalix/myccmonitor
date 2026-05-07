@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
         instance_id = %cfg.instance_id,
         port = cfg.port,
         public_base_url = %cfg.public_base_url,
+        pulsar = %cfg.pulsar_binary_url,
         "myccmonitor-backend starting"
     );
 
@@ -50,8 +51,62 @@ async fn main() -> Result<()> {
         .await?;
     tracing::info!("connected to postgres");
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
-    tracing::info!("sqlx migrations applied");
+    // Custom migration runner. We tried both `sqlx::migrate!` (caching issues
+    // when adding files post-build) and `sqlx::migrate::Migrator::new` (silently
+    // no-ops in our setup); this 20-line direct loop is explicit and reliable.
+    {
+        let migrations_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS _myccmonitor_migrations (\
+                version BIGINT PRIMARY KEY, \
+                name TEXT NOT NULL, \
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+        )
+        .execute(&pool)
+        .await?;
+
+        let mut entries: Vec<_> = std::fs::read_dir(&migrations_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path().extension().and_then(|x| x.to_str()) == Some("sql")
+                    && !e.file_name().to_string_lossy().starts_with('.')
+            })
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+
+        for entry in entries {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            let version: i64 = fname
+                .split('_')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("bad migration filename: {fname}"))?;
+
+            let already: Option<(i64,)> = sqlx::query_as(
+                "SELECT version FROM _myccmonitor_migrations WHERE version = $1",
+            )
+            .bind(version)
+            .fetch_optional(&pool)
+            .await?;
+            if already.is_some() {
+                tracing::debug!(version, name = %fname, "migration already applied");
+                continue;
+            }
+
+            let sql = std::fs::read_to_string(entry.path())?;
+            sqlx::raw_sql(&sql).execute(&pool).await?;
+            sqlx::query(
+                "INSERT INTO _myccmonitor_migrations (version, name) VALUES ($1, $2)",
+            )
+            .bind(version)
+            .bind(&fname)
+            .execute(&pool)
+            .await?;
+            tracing::info!(version, name = %fname, "migration applied");
+        }
+    }
+    tracing::info!("migrations done");
 
     // tower-sessions-sqlx-store creates its own schema/table.
     let session_store = PostgresStore::new(pool.clone());
@@ -62,6 +117,27 @@ async fn main() -> Result<()> {
         .with_expiry(Expiry::OnInactivity(time::Duration::days(7)));
     tracing::info!("session store ready");
 
+    let pulsar = bus::connect(&cfg).await?;
+    let cc_webhooks_topic = cfg.pulsar_topic("cc-webhooks");
+    let producer =
+        bus::WebhookProducer::build(&pulsar, &cc_webhooks_topic, &cfg.instance_id).await?;
+    tracing::info!(topic = %cc_webhooks_topic, "Pulsar producer ready");
+
+    // Spawn the consumer in its own task. If it dies, log and don't bring the whole backend down —
+    // the producer still works, webhooks keep accruing in the topic until restart.
+    {
+        let pulsar = pulsar.clone();
+        let pool = pool.clone();
+        let topic = cc_webhooks_topic.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                bus::consumer::run(pulsar, topic, "myccmonitor-processor".to_string(), pool).await
+            {
+                tracing::error!(error = ?e, "Pulsar consumer task exited with error");
+            }
+        });
+    }
+
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
@@ -70,11 +146,14 @@ async fn main() -> Result<()> {
         cfg: cfg.clone(),
         pool,
         http,
+        bus: Arc::new(producer),
     };
 
     let app = Router::new()
         .route("/health", get(health))
         .merge(auth::router())
+        .merge(handlers::api_router())
+        .merge(webhooks::router())
         .layer(session_layer)
         .with_state(state);
 

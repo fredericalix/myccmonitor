@@ -2,7 +2,7 @@
 -- OAuth tokens are stored AES-256-GCM-encrypted; oauth_nonce holds two
 -- 12-byte AES-GCM nonces concatenated (token_nonce[12] || secret_nonce[12]).
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     cc_user_id      TEXT UNIQUE NOT NULL,
     email           TEXT,

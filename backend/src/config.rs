@@ -41,18 +41,22 @@ impl Config {
         Ok(Self {
             port: env::var("PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(8080),
             public_base_url: req("PUBLIC_BASE_URL")?,
-            database_url: env::var("POSTGRESQL_ADDON_URI")
-                .or_else(|_| env::var("DATABASE_URL"))
-                .context("POSTGRESQL_ADDON_URI or DATABASE_URL is required")?,
+            // Prefer DATABASE_URL (explicit local override), fall back to
+            // POSTGRESQL_ADDON_URI (auto-injected by the CC addon in prod).
+            database_url: env::var("DATABASE_URL")
+                .or_else(|_| env::var("POSTGRESQL_ADDON_URI"))
+                .context("DATABASE_URL or POSTGRESQL_ADDON_URI is required")?,
             cc_consumer_key: req("CC_CONSUMER_KEY")?,
             cc_consumer_secret: req("CC_CONSUMER_SECRET")?,
             cc_api_base_url: env::var("CC_API_BASE_URL")
                 .unwrap_or_else(|_| "https://api.clever-cloud.com".to_string()),
             encryption_key,
-            pulsar_binary_url: req("PULSAR_BINARY_URL")?,
-            pulsar_token: env::var("PULSAR_TOKEN").unwrap_or_default(),
-            pulsar_tenant: req("PULSAR_TENANT")?,
-            pulsar_namespace: req("PULSAR_NAMESPACE")?,
+            pulsar_binary_url: env_or("PULSAR_BINARY_URL", "ADDON_PULSAR_BINARY_URL")?,
+            pulsar_token: env::var("PULSAR_TOKEN")
+                .or_else(|_| env::var("ADDON_PULSAR_TOKEN"))
+                .unwrap_or_default(),
+            pulsar_tenant: env_or("PULSAR_TENANT", "ADDON_PULSAR_TENANT")?,
+            pulsar_namespace: env_or("PULSAR_NAMESPACE", "ADDON_PULSAR_NAMESPACE")?,
             smtp_host: env::var("SMTP_HOST").ok(),
             smtp_user: env::var("SMTP_USER").ok(),
             smtp_pass: env::var("SMTP_PASS").ok(),
@@ -68,6 +72,21 @@ impl Config {
     pub fn cookie_secure(&self) -> bool {
         self.public_base_url.starts_with("https://")
     }
+
+    pub fn pulsar_topic(&self, name: &str) -> String {
+        format!(
+            "persistent://{}/{}/{}",
+            self.pulsar_tenant, self.pulsar_namespace, name
+        )
+    }
+}
+
+/// Read a primary env var; if unset, fall back to a secondary (typical CC
+/// addon-prefixed name). Errors if both are unset.
+fn env_or(primary: &str, fallback: &str) -> Result<String> {
+    env::var(primary)
+        .or_else(|_| env::var(fallback))
+        .with_context(|| format!("env var {primary} or {fallback} is required"))
 }
 
 fn req(name: &str) -> Result<String> {
