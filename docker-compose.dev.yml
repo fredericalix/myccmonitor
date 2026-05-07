@@ -1,0 +1,42 @@
+# Local dev infrastructure: Postgres + Apache Pulsar standalone.
+# Usage: docker compose -f docker-compose.dev.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: myccmonitor-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: myccmonitor
+      POSTGRES_PASSWORD: myccmonitor
+      POSTGRES_DB: myccmonitor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myccmonitor -d myccmonitor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pulsar:
+    image: apachepulsar/pulsar:3.3.2
+    container_name: myccmonitor-pulsar
+    restart: unless-stopped
+    command: bin/pulsar standalone --no-functions-worker --no-stream-storage
+    ports:
+      - "6650:6650"   # binary protocol
+      - "8081:8080"   # admin HTTP (mapped to 8081 to leave 8080 free for the backend)
+    volumes:
+      - pulsar-data:/pulsar/data
+    healthcheck:
+      test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  postgres-data:
+  pulsar-data:

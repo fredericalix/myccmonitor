@@ -1,0 +1,6 @@
+{
+  "deploy": {
+    "build": "cargo build --release",
+    "binary": "myccmonitor-backend"
+  }
+}
