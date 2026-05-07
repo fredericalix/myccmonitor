@@ -29,6 +29,57 @@ pub struct CcOrganisation {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CcApplication {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(rename = "type", default)]
+    pub app_type: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub instance: Option<CcInstance>,
+    #[serde(default)]
+    pub zone: Option<String>,
+    #[serde(default, rename = "lastDeploy")]
+    pub last_deploy: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CcInstance {
+    #[serde(rename = "type")]
+    pub instance_type: Option<String>,
+    pub variant: Option<CcVariant>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CcVariant {
+    pub name: Option<String>,
+    pub slug: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CcAddon {
+    pub id: String,
+    pub name: String,
+    #[serde(default, rename = "realId")]
+    pub real_id: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub provider: Option<CcAddonProvider>,
+    #[serde(rename = "creationDate", default)]
+    pub creation_date: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CcAddonProvider {
+    pub id: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CcWebhook {
     #[serde(default)]
     pub id: Option<String>,
@@ -111,6 +162,27 @@ impl<'a> CcClient<'a> {
 
     pub async fn list_organisations(&self) -> anyhow::Result<Vec<CcOrganisation>> {
         let url = format!("{}/v2/organisations", self.cfg.cc_api_base_url);
+        let body = self.get(&url).await?;
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    pub async fn list_applications(
+        &self,
+        cc_org_id: &str,
+    ) -> anyhow::Result<Vec<CcApplication>> {
+        let url = format!(
+            "{}/v2/organisations/{}/applications",
+            self.cfg.cc_api_base_url, cc_org_id
+        );
+        let body = self.get(&url).await?;
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    pub async fn list_addons(&self, cc_org_id: &str) -> anyhow::Result<Vec<CcAddon>> {
+        let url = format!(
+            "{}/v2/organisations/{}/addons",
+            self.cfg.cc_api_base_url, cc_org_id
+        );
         let body = self.get(&url).await?;
         Ok(serde_json::from_str(&body)?)
     }

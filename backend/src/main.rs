@@ -142,11 +142,24 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_secs(30))
         .build()?;
 
+    // Per-instance WebSocket bus + LISTEN/NOTIFY bridge.
+    let ws_bus = Arc::new(ws::OrgBus::new());
+    {
+        let pool = pool.clone();
+        let bus = ws_bus.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ws::run_listen_notify(pool, bus).await {
+                tracing::error!(error = ?e, "LISTEN/NOTIFY task exited");
+            }
+        });
+    }
+
     let state = AppState {
         cfg: cfg.clone(),
         pool,
         http,
         bus: Arc::new(producer),
+        ws_bus,
     };
 
     let app = Router::new()
@@ -154,6 +167,7 @@ async fn main() -> Result<()> {
         .merge(auth::router())
         .merge(handlers::api_router())
         .merge(webhooks::router())
+        .merge(ws::router())
         .layer(session_layer)
         .with_state(state);
 

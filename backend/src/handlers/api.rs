@@ -3,9 +3,11 @@
 
 use crate::api::{CcClient, SUBSCRIBED_EVENTS};
 use crate::auth::AuthenticatedUser;
+use crate::db::monitors::Monitor;
 use crate::db::orgs::{self, Org, OrgInput};
 use crate::db::webhook_configs::{self, WebhookConfig};
 use crate::error::AppError;
+use crate::monitors::sync;
 use crate::state::AppState;
 use axum::Json;
 use axum::Router;
@@ -20,6 +22,28 @@ pub fn router() -> Router<AppState> {
         .route("/api/me", get(me))
         .route("/api/orgs", get(list_orgs))
         .route("/api/orgs/{cc_org_id}/webhook", post(setup_webhook))
+        .route("/api/orgs/{cc_org_id}/monitors", get(list_monitors))
+}
+
+async fn list_monitors(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(cc_org_id): Path<String>,
+) -> Result<Json<Vec<Monitor>>, AppError> {
+    let _org = orgs::find_by_user_and_cc_id(&state.pool, auth.id, &cc_org_id)
+        .await?
+        .ok_or(AppError::Forbidden)?;
+
+    let cc = CcClient::new(
+        &state.http,
+        &state.cfg,
+        &auth.access_token,
+        &auth.access_secret,
+    );
+    let monitors = sync::sync_org(&state.pool, &cc, auth.id, &cc_org_id)
+        .await
+        .map_err(|e| AppError::CcApi(format!("sync_org: {e}")))?;
+    Ok(Json(monitors))
 }
 
 #[derive(Serialize)]
