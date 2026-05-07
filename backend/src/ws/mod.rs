@@ -38,6 +38,14 @@ pub enum WsFrame {
         cpu: Option<f64>,
         mem: Option<f64>,
     },
+    RuleFiring {
+        rule_id: Uuid,
+        rule_name: String,
+        outcome: String,
+        fired_at: DateTime<Utc>,
+        trigger_kind: String,
+        trigger_ref: Option<Uuid>,
+    },
 }
 
 /// Payload of `pg_notify('ws_broadcast', ...)`. Producers serialize this and
@@ -92,6 +100,15 @@ pub async fn broadcast_via_pg(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Variant for org-agnostic frames (rule firings). Broadcasts on the
+/// `__system__` org channel — clients can subscribe via `GET /ws?org=__system__`.
+pub async fn broadcast_via_pg_ignore_error(
+    pool: &PgPool,
+    frame: WsFrame,
+) -> anyhow::Result<()> {
+    broadcast_via_pg(pool, "__system__", frame).await
 }
 
 /// Long-running task: LISTEN ws_broadcast and route incoming notifications to

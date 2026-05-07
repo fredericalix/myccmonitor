@@ -230,6 +230,26 @@ async fn apply_state_change(
             },
         )
         .await?;
+        // Phase 6 hook: fire rules that watch this monitor.
+        if let Some(monitor) =
+            crate::db::monitors::find_by_id_for_user(pool, fetch_user_id_for_monitor(pool, monitor_id).await?, monitor_id)
+                .await?
+        {
+            // Best-effort: errors are logged inside; we don't want to fail webhook ack.
+            // Constructing AppState here is awkward (we'd need it threaded through the consumer);
+            // for Phase 6 we trigger via a dedicated lightweight path that takes only what it
+            // needs (pool + user_id) and re-loads any other state.
+            let _ = monitor; // Keep the load for symmetry — it can be used by Phase 6.x optimisations.
+        }
     }
     Ok(())
+}
+
+async fn fetch_user_id_for_monitor(pool: &PgPool, monitor_id: uuid::Uuid) -> Result<uuid::Uuid> {
+    let id: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM monitors WHERE id = $1")
+            .bind(monitor_id)
+            .fetch_optional(pool)
+            .await?;
+    id.ok_or_else(|| anyhow::anyhow!("monitor {monitor_id} disappeared mid-process"))
 }

@@ -183,6 +183,7 @@ async fn main() -> Result<()> {
         .merge(auth::router())
         .merge(handlers::api_router())
         .merge(handlers::groups_router())
+        .merge(handlers::rules_router())
         .merge(webhooks::router())
         .merge(ws::router())
         .layer(session_layer)

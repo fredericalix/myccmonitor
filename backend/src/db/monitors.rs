@@ -80,6 +80,18 @@ pub async fn list_for_org(
     .await
 }
 
+pub async fn find_by_id_for_user(
+    pool: &PgPool,
+    user_id: Uuid,
+    id: Uuid,
+) -> Result<Option<Monitor>, sqlx::Error> {
+    sqlx::query_as::<_, Monitor>("SELECT * FROM monitors WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+}
+
 pub async fn find_by_cc_resource(
     pool: &PgPool,
     user_id: Uuid,

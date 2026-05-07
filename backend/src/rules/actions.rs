@@ -1,0 +1,186 @@
+//! Execute one Action. SetMonitorState chains: it mutates a monitor's state,
+//! writes history, broadcasts a WS frame, and re-triggers every rule that
+//! watches this monitor (subject to anti-loop + max-depth guards).
+//!
+//! SendNotification inserts an alerts row in Phase 6 — the actual delivery
+//! (email, Slack, Discord, generic webhook) is wired in Phase 9.
+//!
+//! Escalate logs in Phase 6 — the delayed re-evaluation via the Pulsar
+//! `rule-escalations` topic is wired in Phase 8.
+
+use crate::db::{alerts, monitor_state_history, monitors};
+use crate::rules::condition::Action;
+use crate::rules::exec::{InFlight, MAX_CHAIN_DEPTH, Trigger};
+use crate::state::AppState;
+use crate::ws::{self, WsFrame};
+use chrono::Utc;
+use serde_json::json;
+use uuid::Uuid;
+
+pub async fn execute(
+    state: &AppState,
+    rule_id: Uuid,
+    user_id: Uuid,
+    action: &Action,
+    in_flight: &InFlight,
+    chain_depth: u32,
+    cc_org_id_hint: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    match action {
+        Action::SetMonitorState {
+            target_monitor_id,
+            state: new_state,
+            message,
+            acknowledged,
+        } => {
+            // Verify the target monitor belongs to the same user as the rule.
+            let monitor =
+                match monitors::find_by_id_for_user(&state.pool, user_id, *target_monitor_id)
+                    .await?
+                {
+                    Some(m) => m,
+                    None => {
+                        return Ok(json!({
+                            "kind": "set_monitor_state",
+                            "error": "target monitor not found or not owned by user",
+                        }));
+                    }
+                };
+
+            if in_flight.contains(*target_monitor_id) {
+                tracing::warn!(
+                    monitor_id = %target_monitor_id,
+                    rule_id = %rule_id,
+                    "set_monitor_state skipped: monitor already in chain (anti-loop)"
+                );
+                return Ok(json!({
+                    "kind": "set_monitor_state",
+                    "skipped": "anti_loop",
+                }));
+            }
+            in_flight.insert(*target_monitor_id);
+
+            let before = monitor.current_state.clone();
+            let now = Utc::now();
+            let changed = monitors::set_state_if_changed(
+                &state.pool,
+                *target_monitor_id,
+                new_state,
+                message.as_deref(),
+            )
+            .await?;
+            if let Some(ack) = acknowledged {
+                sqlx::query("UPDATE monitors SET acknowledged = $2, updated_at = now() WHERE id = $1")
+                    .bind(*target_monitor_id)
+                    .bind(ack)
+                    .execute(&state.pool)
+                    .await?;
+            }
+
+            let mut chained_count = 0;
+            if let Some((effective_state, since)) = changed {
+                monitor_state_history::insert(
+                    &state.pool,
+                    *target_monitor_id,
+                    &effective_state,
+                    message.as_deref(),
+                    now,
+                    "rule_action",
+                )
+                .await?;
+
+                let target_org_id = monitor.cc_org_id.clone().or_else(|| cc_org_id_hint.map(|s| s.to_string()));
+                if let Some(org) = target_org_id.as_deref() {
+                    let _ = ws::broadcast_via_pg(
+                        &state.pool,
+                        org,
+                        WsFrame::MonitorState {
+                            monitor_id: *target_monitor_id,
+                            state: effective_state.clone(),
+                            message: message.clone(),
+                            since: Some(since),
+                        },
+                    )
+                    .await;
+                }
+
+                if chain_depth + 1 >= MAX_CHAIN_DEPTH {
+                    tracing::error!(
+                        chain_depth = chain_depth + 1,
+                        max = MAX_CHAIN_DEPTH,
+                        "rule chain max depth reached; truncating"
+                    );
+                } else {
+                    // Box::pin breaks the async recursion cycle for the compiler.
+                    chained_count = Box::pin(
+                        crate::rules::exec::trigger_for_monitor_with_depth(
+                            state,
+                            user_id,
+                            *target_monitor_id,
+                            Trigger::RuleChain { from_rule_id: rule_id },
+                            chain_depth + 1,
+                            in_flight,
+                        ),
+                    )
+                    .await?;
+                }
+            }
+            in_flight.remove(*target_monitor_id);
+
+            Ok(json!({
+                "kind": "set_monitor_state",
+                "monitor_id": target_monitor_id,
+                "before": before,
+                "after": new_state,
+                "chained_rules": chained_count,
+            }))
+        }
+        Action::SendNotification {
+            channel_id,
+            message,
+            subject: _,
+        } => {
+            // Phase 6: just record. Phase 9 wires email / Slack / Discord / webhook.
+            let id = alerts::insert(
+                &state.pool,
+                user_id,
+                None,
+                Some(rule_id),
+                "info",
+                Some(message.as_str()),
+                Some(json!({ "channel_id": channel_id })),
+            )
+            .await?;
+            tracing::info!(
+                rule_id = %rule_id,
+                channel_id = %channel_id,
+                alert_id = %id,
+                "send_notification recorded (Phase 9 will dispatch)"
+            );
+            Ok(json!({
+                "kind": "send_notification",
+                "alert_id": id,
+                "channel_id": channel_id,
+            }))
+        }
+        Action::Escalate {
+            delay_seconds,
+            target_rule_id,
+        } => {
+            // Phase 6: log only. Phase 8 publishes a delayed message on the
+            // `rule-escalations` Pulsar topic and the consumer re-evaluates.
+            tracing::info!(
+                rule_id = %rule_id,
+                target_rule_id = %target_rule_id,
+                delay_seconds,
+                "escalate stub (Phase 8 will deliver via Pulsar)"
+            );
+            Ok(json!({
+                "kind": "escalate",
+                "stubbed": true,
+                "target_rule_id": target_rule_id,
+                "delay_seconds": delay_seconds,
+            }))
+        }
+    }
+}
