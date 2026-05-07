@@ -32,6 +32,12 @@ pub enum WsFrame {
         cc_org_id: String,
         last_received_at: DateTime<Utc>,
     },
+    MetricsSnapshot {
+        monitor_id: Uuid,
+        ts: DateTime<Utc>,
+        cpu: Option<f64>,
+        mem: Option<f64>,
+    },
 }
 
 /// Payload of `pg_notify('ws_broadcast', ...)`. Producers serialize this and

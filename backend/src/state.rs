@@ -1,5 +1,6 @@
 use crate::bus::WebhookProducer;
 use crate::config::Config;
+use crate::metrics::tokens::TokenCache;
 use crate::ws::OrgBus;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -11,4 +12,5 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub bus: Arc<WebhookProducer>,
     pub ws_bus: Arc<OrgBus>,
+    pub warp10_token_cache: Arc<TokenCache>,
 }

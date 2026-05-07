@@ -4,7 +4,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api, ApiError } from "@/services/api";
-import type { Monitor, MonitorState, WsFrame } from "@/services/types";
+import type {
+  MetricSnapshot,
+  Monitor,
+  MonitorState,
+  WsFrame,
+} from "@/services/types";
 import { MonitorCard } from "@/components/MonitorCard";
 import { useOrgWebSocket } from "@/hooks/useOrgWebSocket";
 
@@ -13,6 +18,7 @@ export default function OrgDashboard() {
   const ccOrgId = decodeURIComponent(params.ccOrgId);
 
   const [monitors, setMonitors] = useState<Monitor[]>([]);
+  const [metrics, setMetrics] = useState<Record<string, MetricSnapshot>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,19 +46,29 @@ export default function OrgDashboard() {
   }, [ccOrgId]);
 
   const onFrame = useCallback((frame: WsFrame) => {
-    if (frame.type !== "monitor_state") return;
-    setMonitors((prev) =>
-      prev.map((m) =>
-        m.id === frame.monitor_id
-          ? {
-              ...m,
-              current_state: frame.state as MonitorState,
-              current_message: frame.message,
-              current_state_since: frame.since,
-            }
-          : m,
-      ),
-    );
+    if (frame.type === "monitor_state") {
+      setMonitors((prev) =>
+        prev.map((m) =>
+          m.id === frame.monitor_id
+            ? {
+                ...m,
+                current_state: frame.state as MonitorState,
+                current_message: frame.message,
+                current_state_since: frame.since,
+              }
+            : m,
+        ),
+      );
+    } else if (frame.type === "metrics_snapshot") {
+      setMetrics((prev) => ({
+        ...prev,
+        [frame.monitor_id]: {
+          cpu: frame.cpu,
+          mem: frame.mem,
+          ts: frame.ts,
+        },
+      }));
+    }
   }, []);
 
   useOrgWebSocket(ccOrgId, onFrame);
@@ -104,7 +120,7 @@ export default function OrgDashboard() {
           </h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {apps.map((m) => (
-              <MonitorCard key={m.id} monitor={m} />
+              <MonitorCard key={m.id} monitor={m} metrics={metrics[m.id]} />
             ))}
           </div>
         </section>
@@ -117,7 +133,7 @@ export default function OrgDashboard() {
           </h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {addons.map((m) => (
-              <MonitorCard key={m.id} monitor={m} />
+              <MonitorCard key={m.id} monitor={m} metrics={metrics[m.id]} />
             ))}
           </div>
         </section>

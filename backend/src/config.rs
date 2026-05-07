@@ -10,6 +10,7 @@ pub struct Config {
     pub cc_consumer_key: String,
     pub cc_consumer_secret: String,
     pub cc_api_base_url: String,
+    pub warp10_endpoint: String,
 
     /// AES-256-GCM key, 32 bytes, decoded once at startup.
     pub encryption_key: [u8; 32],
@@ -50,6 +51,10 @@ impl Config {
             cc_consumer_secret: req("CC_CONSUMER_SECRET")?,
             cc_api_base_url: env::var("CC_API_BASE_URL")
                 .unwrap_or_else(|_| "https://api.clever-cloud.com".to_string()),
+            warp10_endpoint: env::var("WARP10_ENDPOINT").unwrap_or_else(|_| {
+                "https://c2-warp10-clevercloud-customers.services.clever-cloud.com/api/v0/exec"
+                    .to_string()
+            }),
             encryption_key,
             pulsar_binary_url: env_or("PULSAR_BINARY_URL", "ADDON_PULSAR_BINARY_URL")?,
             pulsar_token: env::var("PULSAR_TOKEN")

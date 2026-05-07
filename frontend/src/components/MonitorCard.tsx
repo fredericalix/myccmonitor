@@ -1,4 +1,5 @@
-import type { Monitor } from "@/services/types";
+import type { MetricSnapshot, Monitor } from "@/services/types";
+import { MetricBar } from "./MetricBar";
 import { StateBadge } from "./StateBadge";
 
 function formatRelative(iso: string | null): string | null {
@@ -11,8 +12,16 @@ function formatRelative(iso: string | null): string | null {
   return date.toLocaleString();
 }
 
-export function MonitorCard({ monitor }: { monitor: Monitor }) {
+export function MonitorCard({
+  monitor,
+  metrics,
+}: {
+  monitor: Monitor;
+  metrics?: MetricSnapshot;
+}) {
   const since = formatRelative(monitor.current_state_since);
+  const showMetrics =
+    monitor.kind !== "synthetic" && (metrics || monitor.kind === "cc_application" || monitor.kind === "cc_addon");
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition-colors hover:border-slate-300">
       <div className="flex items-start justify-between gap-3">
@@ -26,8 +35,16 @@ export function MonitorCard({ monitor }: { monitor: Monitor }) {
         </div>
         <StateBadge state={monitor.current_state} />
       </div>
+
+      {showMetrics && (
+        <div className="mt-3 space-y-1">
+          <MetricBar label="CPU" value={metrics?.cpu ?? null} />
+          <MetricBar label="MEM" value={metrics?.mem ?? null} />
+        </div>
+      )}
+
       {monitor.current_message && (
-        <p className="mt-2 text-xs text-slate-600">
+        <p className="mt-3 text-xs text-slate-600">
           {monitor.current_message}
         </p>
       )}

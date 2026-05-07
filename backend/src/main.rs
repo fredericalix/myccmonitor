@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod groups;
 mod handlers;
+mod metrics;
 mod monitors;
 mod notifications;
 mod rules;
@@ -154,12 +155,27 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Phase 4 Warp10 poller: shared in-memory cache for the metrics tokens.
+    let warp10_token_cache = Arc::new(metrics::tokens::TokenCache::new());
+    {
+        let pool = pool.clone();
+        let cfg = cfg.clone();
+        let http = http.clone();
+        let cache = warp10_token_cache.clone();
+        tokio::spawn(async move {
+            if let Err(e) = monitors::poller::run(pool, cfg, http, cache).await {
+                tracing::error!(error = ?e, "Warp10 poller task exited");
+            }
+        });
+    }
+
     let state = AppState {
         cfg: cfg.clone(),
         pool,
         http,
         bus: Arc::new(producer),
         ws_bus,
+        warp10_token_cache,
     };
 
     let app = Router::new()

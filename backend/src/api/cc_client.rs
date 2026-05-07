@@ -187,6 +187,17 @@ impl<'a> CcClient<'a> {
         Ok(serde_json::from_str(&body)?)
     }
 
+    /// CC returns a Warp10 read token (good for ~5 days) for the given org.
+    /// The body is a JSON-quoted string (`"AbCd…"`) — strip the quotes.
+    pub async fn get_metrics_token(&self, cc_org_id: &str) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/v2/metrics/read/{}",
+            self.cfg.cc_api_base_url, cc_org_id
+        );
+        let body = self.get(&url).await?;
+        Ok(body.trim().trim_matches('"').to_string())
+    }
+
     /// Creates a webhook for the given owner (= an org id, or the user id for personal apps).
     /// CC endpoint: POST /v2/notifications/webhooks/{ownerId}
     /// Body shape per @clevercloud/client: { name, urls: [{format, url}], events }.

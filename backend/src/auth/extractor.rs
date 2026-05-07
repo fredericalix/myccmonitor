@@ -3,7 +3,7 @@
 //! Use as `auth_user: AuthenticatedUser` in any axum handler that needs the
 //! caller's identity or needs to call CC API on their behalf.
 
-use crate::auth::encryption;
+use crate::auth::decrypt_user_oauth;
 use crate::db::users::{self, User};
 use crate::error::AppError;
 use crate::state::AppState;
@@ -41,31 +41,8 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
             .await?
             .ok_or(AppError::Unauthorized)?;
 
-        if user.oauth_nonce.len() != 24 {
-            return Err(AppError::Internal(anyhow::anyhow!(
-                "user.oauth_nonce length is {}, expected 24",
-                user.oauth_nonce.len()
-            )));
-        }
-        let token_nonce = &user.oauth_nonce[..12];
-        let secret_nonce = &user.oauth_nonce[12..];
-
-        let token_bytes = encryption::decrypt(
-            &user.oauth_token_enc,
-            token_nonce,
-            &state.cfg.encryption_key,
-        )
-        .map_err(AppError::Internal)?;
-        let secret_bytes = encryption::decrypt(
-            &user.oauth_secret_enc,
-            secret_nonce,
-            &state.cfg.encryption_key,
-        )
-        .map_err(AppError::Internal)?;
-        let access_token =
-            String::from_utf8(token_bytes).map_err(|e| AppError::Internal(e.into()))?;
-        let access_secret =
-            String::from_utf8(secret_bytes).map_err(|e| AppError::Internal(e.into()))?;
+        let (access_token, access_secret) =
+            decrypt_user_oauth(&user, &state.cfg.encryption_key).map_err(AppError::Internal)?;
 
         Ok(Self {
             id: user_id,

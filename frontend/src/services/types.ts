@@ -60,4 +60,17 @@ export type WsFrame =
       type: "webhook_health";
       cc_org_id: string;
       last_received_at: string;
+    }
+  | {
+      type: "metrics_snapshot";
+      monitor_id: string;
+      ts: string;
+      cpu: number | null;
+      mem: number | null;
     };
+
+export interface MetricSnapshot {
+  cpu: number | null;
+  mem: number | null;
+  ts: string;
+}
