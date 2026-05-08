@@ -2,6 +2,7 @@
 
 import {
   Background,
+  BackgroundVariant,
   Connection,
   Controls,
   Edge,
@@ -22,12 +23,27 @@ import {
 import "reactflow/dist/style.css";
 import dagre from "dagre";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowsClockwise,
+  Funnel,
+  Info,
+  Intersect,
+  Lightning,
+  PaperPlaneTilt,
+  PlayCircle,
+  Plus,
+  Trash,
+} from "@phosphor-icons/react";
 import type { Action, Condition, Rule, UpsertRuleInput } from "@/services/types";
 import ConditionNode from "./Nodes/ConditionNode";
 import LogicalOperatorNode from "./Nodes/LogicalOperatorNode";
 import ActionNode from "./Nodes/ActionNode";
 import RuleOutputNode from "./Nodes/RuleOutputNode";
 import { EditorContext, type EditorData } from "./EditorContext";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
+import { toast } from "@/components/ui/Toaster";
 
 const NODE_TYPES = {
   conditionNode: ConditionNode,
@@ -90,9 +106,7 @@ function ruleToGraph(
     data: {},
   });
 
-  if (!rule) {
-    return { nodes, edges };
-  }
+  if (!rule) return { nodes, edges };
 
   function processCondition(c: Condition): string {
     if (c.type === "comparison") {
@@ -238,8 +252,9 @@ function graphToRule(
   for (const e of actionEdges) {
     const an = nodes.find((x) => x.id === e.target && x.type === "actionNode");
     if (!an) continue;
-    const { onChange: _omit, ...rest } = an.data as Record<string, unknown>;
-    actions.push(rest as unknown as Action);
+    const copy = { ...(an.data as Record<string, unknown>) };
+    delete copy.onChange;
+    actions.push(copy as unknown as Action);
   }
   if (actions.length === 0) {
     throw new Error("at least one Action node must connect to RuleOutput");
@@ -271,6 +286,7 @@ function RuleEditorInner({
   const [name, setName] = useState(initialRule?.name ?? "");
   const [isEnabled, setIsEnabled] = useState(initialRule?.is_enabled ?? true);
   const [cooldown, setCooldown] = useState(initialRule?.cooldown_seconds ?? 300);
+  const [showLegend, setShowLegend] = useState(false);
 
   const handleNodeChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
@@ -283,8 +299,6 @@ function RuleEditorInner({
     [setNodes],
   );
 
-  // Load initial graph. The setStates here are synchronising React state
-  // with an external prop (initialRule) — this is the canonical pattern.
   useEffect(() => {
     const { nodes: ns, edges: es } = ruleToGraph(initialRule, handleNodeChange);
     setNodes(ns);
@@ -297,6 +311,7 @@ function RuleEditorInner({
         ...(c as Edge),
         id: `e-${c.source}-${c.target}-${Date.now()}`,
         markerEnd: { type: MarkerType.ArrowClosed },
+        style: { stroke: "var(--color-accent)" },
       };
       setEdges((es) => addEdge(newEdge, es));
     },
@@ -351,14 +366,16 @@ function RuleEditorInner({
 
   const handleSave = useCallback(async () => {
     if (!name.trim()) {
-      alert("Rule name is required.");
+      toast.error("Rule name is required");
       return;
     }
     try {
       const input = graphToRule(nodes, edges, name.trim(), isEnabled, cooldown);
       await onSave(input);
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : String(e));
+      toast.error("Validation failed", {
+        description: e instanceof Error ? e.message : String(e),
+      });
     }
   }, [nodes, edges, name, isEnabled, cooldown, onSave]);
 
@@ -366,61 +383,59 @@ function RuleEditorInner({
 
   return (
     <EditorContext.Provider value={ctx}>
-      <div className="flex h-[calc(100vh-3rem)] flex-col">
-        <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-6 py-3 shadow-sm">
-          <input
+      <Card variant="elevated" className="overflow-hidden p-0">
+        {/* Toolbar */}
+        <div className="flex flex-wrap items-center gap-3 border-b border-border bg-bg/50 px-4 py-3">
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Rule name"
-            className="flex-1 min-w-[200px] rounded border border-slate-300 px-3 py-1.5 text-sm"
+            className="flex-1 min-w-[200px]"
           />
-          <label className="flex items-center gap-1 text-xs text-slate-700">
+          <label className="flex items-center gap-1.5 text-xs text-text-muted whitespace-nowrap">
             <input
               type="checkbox"
               checked={isEnabled}
               onChange={(e) => setIsEnabled(e.target.checked)}
+              className="accent-accent h-4 w-4"
             />
             enabled
           </label>
-          <label className="flex items-center gap-1 text-xs text-slate-700">
+          <label className="flex items-center gap-1.5 text-xs text-text-muted whitespace-nowrap">
             cooldown
             <input
               type="number"
               min="0"
               value={cooldown}
               onChange={(e) => setCooldown(parseInt(e.target.value, 10) || 0)}
-              className="w-20 rounded border border-slate-300 px-2 py-1 text-xs"
+              className="w-20 rounded-md border border-border bg-elevated px-2 py-1 text-xs text-text"
             />
             s
           </label>
-          <button
-            onClick={handleSave}
-            disabled={busy}
-            className="rounded bg-slate-900 px-4 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
-          >
-            {busy ? "Saving…" : (saveLabel ?? "Save")}
-          </button>
-          {onTest && (
-            <button
-              onClick={onTest}
-              disabled={busy}
-              className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Dry-run
-            </button>
-          )}
-          {onDelete && (
-            <button
-              onClick={onDelete}
-              disabled={busy}
-              className="rounded border border-rose-300 px-3 py-1.5 text-sm text-rose-700 hover:bg-rose-50 disabled:opacity-50"
-            >
-              Delete
-            </button>
-          )}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {onTest ? (
+              <Button variant="secondary" size="sm" onClick={onTest} disabled={busy}>
+                <PlayCircle weight="bold" size={14} />
+                Dry-run
+              </Button>
+            ) : null}
+            {onDelete ? (
+              <Button variant="danger" size="sm" onClick={onDelete} disabled={busy}>
+                <Trash weight="bold" size={14} />
+                Delete
+              </Button>
+            ) : null}
+            <Button variant="primary" size="sm" onClick={handleSave} disabled={busy}>
+              {busy ? "Saving…" : (saveLabel ?? "Save")}
+            </Button>
+          </div>
         </div>
 
-        <div className="flex-1" ref={wrap}>
+        {/* Canvas */}
+        <div
+          className="h-[calc(100vh-22rem)] min-h-[500px] bg-bg/40 react-flow-warm"
+          ref={wrap}
+        >
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -431,53 +446,149 @@ function RuleEditorInner({
             deleteKeyCode={["Backspace", "Delete"]}
             defaultEdgeOptions={{
               markerEnd: { type: MarkerType.ArrowClosed },
+              style: { stroke: "var(--color-accent-strong)", strokeWidth: 1.5 },
             }}
+            fitView
           >
-            <Controls />
-            <MiniMap />
-            <Background gap={16} />
+            <Controls
+              style={{
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-border)",
+                borderRadius: 12,
+                color: "var(--color-text)",
+                overflow: "hidden",
+              }}
+            />
+            <MiniMap
+              pannable
+              zoomable
+              maskColor="var(--color-bg)"
+              maskStrokeColor="var(--color-border-strong)"
+              nodeColor={(n) => {
+                switch (n.type) {
+                  case "conditionNode":
+                    return "var(--color-accent)";
+                  case "logicalOperatorNode":
+                    return "var(--color-warning)";
+                  case "actionNode":
+                    return "var(--color-ok)";
+                  case "ruleOutputNode":
+                    return "var(--color-accent-strong)";
+                  default:
+                    return "var(--color-border-strong)";
+                }
+              }}
+              style={{
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-border)",
+                borderRadius: 12,
+              }}
+            />
+            <Background
+              gap={20}
+              size={1.4}
+              color="var(--color-border-strong)"
+              variant={BackgroundVariant.Dots}
+            />
 
-            <Panel
-              position="top-left"
-              className="rounded-md border border-slate-200 bg-white p-2 shadow-sm"
-            >
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                Add node
-              </div>
-              <div className="flex flex-col gap-1">
+            <Panel position="top-left">
+              <div className="flex flex-col gap-1.5 rounded-2xl border border-border bg-surface/95 backdrop-blur p-2 shadow-warm-md">
+                <p className="px-2 pt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-muted">
+                  Add node
+                </p>
                 <button
                   type="button"
                   onClick={() => addNode("conditionNode")}
-                  className="rounded bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                  className="flex items-center gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-xs font-medium text-accent-strong hover:bg-accent hover:text-accent-on transition-colors"
                 >
-                  + Condition
+                  <Funnel weight="duotone" size={14} />
+                  Condition
                 </button>
                 <button
                   type="button"
                   onClick={() => addNode("logicalOperatorNode")}
-                  className="rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                  className="flex items-center gap-2 rounded-lg bg-warning-soft px-2.5 py-1.5 text-xs font-medium text-warning hover:opacity-90 transition-opacity"
                 >
-                  + Logical (AND/OR)
+                  <Intersect weight="duotone" size={14} />
+                  Logical
                 </button>
                 <button
                   type="button"
                   onClick={() => addNode("actionNode")}
-                  className="rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                  className="flex items-center gap-2 rounded-lg bg-ok-soft px-2.5 py-1.5 text-xs font-medium text-ok hover:opacity-90 transition-opacity"
                 >
-                  + Action
+                  <Lightning weight="duotone" size={14} />
+                  Action
                 </button>
+                <hr className="my-1 border-border" />
                 <button
                   type="button"
                   onClick={onLayout}
-                  className="mt-1 rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                  className="flex items-center gap-2 rounded-lg bg-bg/60 border border-border px-2.5 py-1.5 text-xs font-medium text-text-muted hover:bg-elevated"
                 >
+                  <ArrowsClockwise weight="bold" size={12} />
                   Re-layout
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLegend((s) => !s)}
+                  className="flex items-center gap-2 rounded-lg px-2.5 py-1 text-[11px] text-text-muted hover:text-text"
+                >
+                  <Info weight="duotone" size={12} />
+                  {showLegend ? "Hide" : "Show"} legend
+                </button>
+              </div>
+            </Panel>
+
+            {showLegend ? (
+              <Panel position="top-right">
+                <div className="rounded-2xl border border-border bg-surface/95 backdrop-blur p-3 shadow-warm-md text-xs space-y-1.5 max-w-[260px]">
+                  <p className="font-serif text-base text-text mb-2">Legend</p>
+                  <div className="flex items-center gap-2">
+                    <Funnel weight="duotone" size={14} className="text-accent-strong" />
+                    <span className="text-text-muted">
+                      <strong className="text-text">Condition</strong> — compare a
+                      monitor or group property to a value.
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Intersect weight="duotone" size={14} className="text-warning" />
+                    <span className="text-text-muted">
+                      <strong className="text-text">Logical</strong> — AND / OR
+                      with 2–6 inputs.
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Lightning weight="duotone" size={14} className="text-ok" />
+                    <span className="text-text-muted">
+                      <strong className="text-text">Action</strong> —
+                      setMonitorState, sendNotification, escalate.
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <PaperPlaneTilt
+                      weight="duotone"
+                      size={14}
+                      className="text-accent-strong"
+                    />
+                    <span className="text-text-muted">
+                      Connect a condition tree to <strong>Rule output</strong>;
+                      attach actions on the right.
+                    </span>
+                  </div>
+                </div>
+              </Panel>
+            ) : null}
+
+            <Panel position="bottom-right">
+              <div className="rounded-full border border-border bg-surface/95 backdrop-blur px-2.5 py-1 text-[10px] text-text-subtle font-mono shadow-warm-sm flex items-center gap-1">
+                <Plus weight="bold" size={10} />
+                Drag handles to connect nodes
               </div>
             </Panel>
           </ReactFlow>
         </div>
-      </div>
+      </Card>
     </EditorContext.Provider>
   );
 }

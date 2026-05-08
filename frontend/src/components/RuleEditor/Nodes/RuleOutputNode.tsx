@@ -1,23 +1,27 @@
 "use client";
 
-import { Handle, NodeProps, Position } from "reactflow";
+import { Handle, Position } from "reactflow";
+import { CheckCircle } from "@phosphor-icons/react";
 
-export default function RuleOutputNode(_props: NodeProps) {
+export default function RuleOutputNode() {
   return (
-    <div className="w-32 rounded-md border-2 border-indigo-300 bg-indigo-50 p-3 text-center shadow-sm">
-      <div className="text-xs font-bold uppercase tracking-wider text-indigo-700">
-        Rule
+    <div className="w-36 rounded-2xl border-2 border-accent/60 bg-accent-soft p-3 text-center shadow-warm-md">
+      <div className="flex flex-col items-center gap-0.5">
+        <CheckCircle weight="duotone" size={22} className="text-accent-strong" />
+        <div className="text-xs font-semibold uppercase tracking-wider text-accent-strong">
+          Rule output
+        </div>
+        <div className="text-[10px] text-text-muted italic">fire actions →</div>
       </div>
-      <div className="mt-1 text-[10px] text-indigo-600">output</div>
       <Handle
         type="target"
         position={Position.Left}
         id="rule-in"
         style={{
-          background: "#6366f1",
+          background: "var(--color-accent)",
           width: 12,
           height: 12,
-          border: "2px solid white",
+          border: "2px solid var(--color-surface)",
         }}
       />
       <Handle
@@ -25,10 +29,10 @@ export default function RuleOutputNode(_props: NodeProps) {
         position={Position.Right}
         id="rule-out"
         style={{
-          background: "#6366f1",
+          background: "var(--color-accent)",
           width: 12,
           height: 12,
-          border: "2px solid white",
+          border: "2px solid var(--color-surface)",
         }}
       />
     </div>

@@ -1,7 +1,9 @@
-function color(value: number): string {
-  if (value >= 90) return "bg-rose-500";
-  if (value >= 75) return "bg-amber-500";
-  return "bg-emerald-500";
+import { cn } from "@/lib/cn";
+
+function gradient(value: number): string {
+  if (value >= 90) return "from-critical/80 to-critical";
+  if (value >= 75) return "from-warning/80 to-warning";
+  return "from-accent/80 to-accent";
 }
 
 export function MetricBar({
@@ -13,25 +15,32 @@ export function MetricBar({
 }) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return (
-      <div className="flex items-center gap-2 text-[11px] text-slate-400">
-        <span className="w-9 font-mono uppercase">{label}</span>
-        <span>—</span>
+      <div className="flex items-center gap-2 text-[11px] text-text-subtle">
+        <span className="w-9 font-mono uppercase tracking-wider">{label}</span>
+        <div className="h-2 flex-1 rounded-full bg-bg/60" />
+        <span className="w-10 text-right font-mono">—</span>
       </div>
     );
   }
   const pct = Math.max(0, Math.min(100, value));
   return (
-    <div className="flex items-center gap-2">
-      <span className="w-9 font-mono text-[11px] uppercase text-slate-500">
+    <div
+      className="flex items-center gap-2 group"
+      title={`${label}: ${pct.toFixed(2)}%`}
+    >
+      <span className="w-9 font-mono text-[11px] uppercase tracking-wider text-text-muted">
         {label}
       </span>
-      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+      <div className="h-2 flex-1 overflow-hidden rounded-full bg-bg/70 ring-1 ring-inset ring-border/60">
         <div
-          className={`h-full ${color(pct)} transition-[width] duration-500`}
+          className={cn(
+            "h-full rounded-full bg-gradient-to-r transition-[width] duration-700 ease-out",
+            gradient(pct),
+          )}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="w-10 text-right font-mono text-[11px] tabular-nums text-slate-600">
+      <span className="w-10 text-right font-mono text-[11px] tabular-nums text-text-muted">
         {pct.toFixed(0)}%
       </span>
     </div>

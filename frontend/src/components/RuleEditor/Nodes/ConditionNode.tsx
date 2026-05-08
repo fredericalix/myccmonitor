@@ -1,9 +1,11 @@
 "use client";
 
 import { Handle, NodeProps, Position } from "reactflow";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { Funnel, Hourglass, Warning } from "@phosphor-icons/react";
 import { useEditorData } from "../EditorContext";
 import type { CompOp } from "@/services/types";
+import { cn } from "@/lib/cn";
 
 type TargetKind = "monitor" | "group";
 
@@ -83,6 +85,9 @@ function formatDuration(seconds: number): string {
   return `${seconds}s`;
 }
 
+const fieldCls =
+  "w-full rounded-md border border-border bg-elevated px-2 py-1 text-xs text-text focus:border-accent focus:ring-1 focus:ring-accent/30 focus:outline-none";
+
 export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
   const { monitors, groups } = useEditorData();
   const initial = parseField(data.field || "");
@@ -141,11 +146,11 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
     }
   };
 
-  const valueInput = useMemo(() => {
+  const valueInput = (() => {
     if (prop === "state") {
       return (
         <select
-          className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+          className={fieldCls}
           value={String(data.value ?? "")}
           onChange={onValueChange}
         >
@@ -160,11 +165,12 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
     }
     if (prop === "acknowledged") {
       return (
-        <label className="flex items-center gap-1 text-xs">
+        <label className="flex items-center gap-1.5 text-xs text-text">
           <input
             type="checkbox"
             checked={!!data.value}
             onChange={onValueChange}
+            className="accent-accent"
           />
           {data.value ? "true" : "false"}
         </label>
@@ -185,7 +191,7 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
       return (
         <input
           type="number"
-          className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+          className={fieldCls}
           value={typeof data.value === "number" ? data.value : ""}
           onChange={onValueChange}
           placeholder="number"
@@ -196,56 +202,62 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
     return (
       <input
         type="text"
-        className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+        className={fieldCls}
         value={typeof data.value === "string" ? data.value : ""}
         onChange={onValueChange}
         placeholder="value"
       />
     );
-  }, [prop, data.value]);
+  })();
 
   const targets = kind === "monitor" ? monitors : groups;
   const isValid = !!targetId && !!prop && !!data.operator;
 
   return (
     <div
-      className={`w-72 rounded-md border-2 bg-white p-3 shadow-sm ${
-        isValid ? "border-blue-300" : "border-rose-300"
-      }`}
+      className={cn(
+        "w-72 rounded-2xl border-2 bg-surface p-3 shadow-warm-md",
+        isValid ? "border-accent/60" : "border-critical/60",
+      )}
     >
-      <div className="mb-2 text-xs font-bold uppercase tracking-wider text-blue-700">
-        Condition
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-accent-strong">
+          <Funnel weight="duotone" size={14} />
+          Condition
+        </div>
+        {!isValid ? (
+          <span
+            className="inline-flex items-center gap-1 text-[10px] font-medium text-critical"
+            title="Pick target, property, operator and value"
+          >
+            <Warning weight="bold" size={12} />
+            incomplete
+          </span>
+        ) : null}
       </div>
 
-      <div className="mb-2 flex gap-2">
-        <button
-          type="button"
-          onClick={() => changeKind("monitor")}
-          className={`flex-1 rounded px-2 py-0.5 text-[11px] font-medium ${
-            kind === "monitor"
-              ? "bg-blue-600 text-white"
-              : "bg-slate-100 text-slate-600"
-          }`}
-        >
-          monitor
-        </button>
-        <button
-          type="button"
-          onClick={() => changeKind("group")}
-          className={`flex-1 rounded px-2 py-0.5 text-[11px] font-medium ${
-            kind === "group"
-              ? "bg-blue-600 text-white"
-              : "bg-slate-100 text-slate-600"
-          }`}
-        >
-          group
-        </button>
+      <div className="mb-2 grid grid-cols-2 gap-1 rounded-lg bg-bg/60 p-1">
+        {(["monitor", "group"] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => changeKind(k)}
+            className={cn(
+              "rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+              kind === k
+                ? "bg-accent text-accent-on shadow-warm-sm"
+                : "text-text-muted hover:text-text",
+            )}
+          >
+            {k}
+          </button>
+        ))}
       </div>
 
       <select
         value={targetId}
         onChange={(e) => setTargetId(e.target.value)}
-        className="mb-1.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+        className={cn(fieldCls, "mb-1.5")}
       >
         <option value="">— pick {kind} —</option>
         {targets.map((t) => (
@@ -257,51 +269,59 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
         ))}
       </select>
 
-      <select
-        value={prop}
-        onChange={(e) => setProp(e.target.value)}
-        className="mb-1.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
-      >
-        <option value="">— property —</option>
-        {props.map((p) => (
-          <option key={p} value={p}>
-            {p}
-          </option>
-        ))}
-      </select>
-
-      <select
-        value={data.operator}
-        onChange={onOperatorChange}
-        className="mb-1.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
-      >
-        <option value="">— op —</option>
-        {(Object.keys(OP_LABEL) as CompOp[]).map((op) => (
-          <option key={op} value={op}>
-            {OP_LABEL[op]}
-          </option>
-        ))}
-      </select>
+      <div className="mb-1.5 grid grid-cols-2 gap-1.5">
+        <select
+          value={prop}
+          onChange={(e) => setProp(e.target.value)}
+          className={fieldCls}
+        >
+          <option value="">— prop —</option>
+          {props.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+        <select
+          value={data.operator}
+          onChange={onOperatorChange}
+          className={fieldCls}
+        >
+          <option value="">— op —</option>
+          {(Object.keys(OP_LABEL) as CompOp[]).map((op) => (
+            <option key={op} value={op}>
+              {OP_LABEL[op]}
+            </option>
+          ))}
+        </select>
+      </div>
 
       <div className="mb-1.5">{valueInput}</div>
 
-      <input
-        type="text"
-        value={durationText}
-        onChange={onDurationChange}
-        placeholder="for 5m (optional)"
-        className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]"
-      />
+      <label className="relative flex items-center">
+        <Hourglass
+          weight="duotone"
+          size={12}
+          className="absolute left-2 text-text-subtle pointer-events-none"
+        />
+        <input
+          type="text"
+          value={durationText}
+          onChange={onDurationChange}
+          placeholder="for 5m (optional)"
+          className={cn(fieldCls, "pl-6 bg-bg/60")}
+        />
+      </label>
 
       <Handle
         type="source"
         position={Position.Right}
         id="cond-out"
         style={{
-          background: "#3b82f6",
+          background: "var(--color-accent)",
           width: 12,
           height: 12,
-          border: "2px solid white",
+          border: "2px solid var(--color-surface)",
         }}
       />
     </div>
