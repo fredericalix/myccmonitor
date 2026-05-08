@@ -6,6 +6,7 @@ pub mod metric_samples;
 pub mod monitor_groups;
 pub mod monitor_state_history;
 pub mod monitors;
+pub mod notification_channels;
 pub mod orgs;
 pub mod rule_firings;
 pub mod rules;

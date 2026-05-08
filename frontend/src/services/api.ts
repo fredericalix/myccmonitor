@@ -4,9 +4,11 @@ import type {
   GroupView,
   Me,
   Monitor,
+  NotificationChannel,
   Org,
   Rule,
   RuleFiring,
+  UpsertChannelInput,
   UpsertRuleInput,
   WebhookConfig,
 } from "./types";
@@ -98,4 +100,18 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+
+  listChannels: () => request<NotificationChannel[]>("/api/channels"),
+  createChannel: (input: UpsertChannelInput) =>
+    request<NotificationChannel>("/api/channels", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateChannel: (id: string, input: UpsertChannelInput) =>
+    request<NotificationChannel>(`/api/channels/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  deleteChannel: (id: string) =>
+    request<void>(`/api/channels/${id}`, { method: "DELETE" }),
 };

@@ -249,10 +249,17 @@ async fn validate_action_refs(
                     return Err(AppError::Forbidden);
                 }
             }
-            Action::SendNotification { .. } => {
-                // Notification channels are introduced in Phase 9; until then we
-                // accept arbitrary channel_ids as opaque references. Phase 9 will
-                // tighten this with a notification_channels table check.
+            Action::SendNotification { channel_id, .. } => {
+                let exists: Option<bool> = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM notification_channels WHERE id = $1 AND user_id = $2)",
+                )
+                .bind(channel_id)
+                .bind(user_id)
+                .fetch_optional(&state.pool)
+                .await?;
+                if !exists.unwrap_or(false) {
+                    return Err(AppError::Forbidden);
+                }
             }
         }
     }

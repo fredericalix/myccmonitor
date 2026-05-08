@@ -206,3 +206,29 @@ export interface DryRunResult {
   matched: boolean;
   actions_that_would_run: number;
 }
+
+// ───── Notification channels ─────
+
+export type ChannelKind = "email" | "slack" | "discord" | "webhook";
+
+export interface NotificationChannel {
+  id: string;
+  user_id: string;
+  kind: ChannelKind;
+  name: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  failure_count: number;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_failure_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertChannelInput {
+  kind: ChannelKind;
+  name: string;
+  config: Record<string, unknown>;
+  enabled?: boolean;
+}

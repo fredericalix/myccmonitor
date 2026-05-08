@@ -8,7 +8,8 @@
 //! Escalate logs in Phase 6 — the delayed re-evaluation via the Pulsar
 //! `rule-escalations` topic is wired in Phase 8.
 
-use crate::db::{alerts, monitor_state_history, monitors};
+use crate::db::{monitor_state_history, monitors};
+use crate::notifications::dispatch;
 use crate::rules::condition::Action;
 use crate::rules::exec::{InFlight, MAX_CHAIN_DEPTH, Trigger};
 use crate::state::AppState;
@@ -138,30 +139,47 @@ pub async fn execute(
         Action::SendNotification {
             channel_id,
             message,
-            subject: _,
+            subject,
         } => {
-            // Phase 6: just record. Phase 9 wires email / Slack / Discord / webhook.
-            let id = alerts::insert(
-                &state.pool,
+            // Phase 9: real dispatch. Loads the rule, looks up the channel,
+            // renders handlebars message+subject, retries 3× with exponential
+            // backoff. Inserts an `alerts` row whether the send succeeded or
+            // failed (with `delivered: true|false` in payload).
+            let rule = match crate::db::rules::find(&state.pool, user_id, rule_id).await? {
+                Some(r) => r,
+                None => {
+                    return Ok(json!({
+                        "kind": "send_notification",
+                        "error": "rule disappeared mid-action",
+                    }));
+                }
+            };
+            let _ = cc_org_id_hint; // not used by the dispatcher; trigger ref isn't a monitor here
+            match dispatch::dispatch(
+                state,
+                *channel_id,
+                &rule,
                 user_id,
+                "rule_action",
                 None,
-                Some(rule_id),
-                "info",
-                Some(message.as_str()),
-                Some(json!({ "channel_id": channel_id })),
+                message,
+                subject.as_deref(),
             )
-            .await?;
-            tracing::info!(
-                rule_id = %rule_id,
-                channel_id = %channel_id,
-                alert_id = %id,
-                "send_notification recorded (Phase 9 will dispatch)"
-            );
-            Ok(json!({
-                "kind": "send_notification",
-                "alert_id": id,
-                "channel_id": channel_id,
-            }))
+            .await
+            {
+                Ok(alert_id) => Ok(json!({
+                    "kind": "send_notification",
+                    "delivered": true,
+                    "alert_id": alert_id,
+                    "channel_id": channel_id,
+                })),
+                Err(e) => Ok(json!({
+                    "kind": "send_notification",
+                    "delivered": false,
+                    "channel_id": channel_id,
+                    "error": format!("{e}"),
+                })),
+            }
         }
         Action::Escalate {
             delay_seconds,

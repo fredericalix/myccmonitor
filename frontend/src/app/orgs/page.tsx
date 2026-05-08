@@ -63,6 +63,12 @@ export default function OrgsPage() {
             Groups →
           </Link>
           <Link
+            href="/channels"
+            className="text-slate-600 hover:text-slate-900"
+          >
+            Channels →
+          </Link>
+          <Link
             href="/"
             className="text-slate-500 hover:text-slate-900"
           >

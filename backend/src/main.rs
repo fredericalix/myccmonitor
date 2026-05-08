@@ -211,6 +211,7 @@ async fn main() -> Result<()> {
         .merge(handlers::api_router())
         .merge(handlers::groups_router())
         .merge(handlers::rules_router())
+        .merge(handlers::channels_router())
         .merge(webhooks::router())
         .merge(ws::router())
         .layer(session_layer)
