@@ -1,7 +1,7 @@
 "use client";
 
 import { Handle, NodeProps, Position } from "reactflow";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { Funnel, Hourglass, Warning } from "@phosphor-icons/react";
 import { useEditorData } from "../EditorContext";
 import type { CompOp } from "@/services/types";
@@ -100,22 +100,34 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
 
   const props = kind === "monitor" ? MONITOR_PROPS : GROUP_PROPS;
 
+  // Compose the `field` string and push it to graph state. Called from the
+  // dropdown handlers — never from an effect — so we don't loop on `data`
+  // identity changes coming back from the parent.
+  const emitField = (k: TargetKind, t: string, p: string) => {
+    if (!t || !p) return;
+    data.onChange(id, "field", `${k}:${t}:${p}`);
+  };
+
   function changeKind(newKind: TargetKind) {
     setKind(newKind);
     const newProps = newKind === "monitor" ? MONITOR_PROPS : GROUP_PROPS;
-    if (prop && !(newProps as readonly string[]).includes(prop)) {
-      setProp("");
-    }
+    const nextProp =
+      prop && (newProps as readonly string[]).includes(prop) ? prop : "";
+    if (nextProp !== prop) setProp(nextProp);
+    emitField(newKind, targetId, nextProp);
   }
 
-  const updateField = useCallback(() => {
-    if (!targetId || !prop) return;
-    data.onChange(id, "field", `${kind}:${targetId}:${prop}`);
-  }, [id, data, kind, targetId, prop]);
+  const onTargetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    setTargetId(v);
+    emitField(kind, v, prop);
+  };
 
-  useEffect(() => {
-    updateField();
-  }, [updateField]);
+  const onPropChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    setProp(v);
+    emitField(kind, targetId, v);
+  };
 
   const onOperatorChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     data.onChange(id, "operator", e.target.value);
@@ -256,7 +268,7 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
 
       <select
         value={targetId}
-        onChange={(e) => setTargetId(e.target.value)}
+        onChange={onTargetChange}
         className={cn(fieldCls, "mb-1.5")}
       >
         <option value="">— pick {kind} —</option>
@@ -272,7 +284,7 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
       <div className="mb-1.5 grid grid-cols-2 gap-1.5">
         <select
           value={prop}
-          onChange={(e) => setProp(e.target.value)}
+          onChange={onPropChange}
           className={fieldCls}
         >
           <option value="">— prop —</option>

@@ -178,18 +178,30 @@ async fn refresh_app_state(
         }
 
         let key = advisory_lock_key(monitor.id);
-        let acquired: bool = match sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        // xact-scoped lock auto-released at commit/rollback. Holding the lock
+        // on the same connection that started the transaction avoids the
+        // cross-connection unlock that triggered Postgres NOTICEs.
+        let mut tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::warn!(error = ?e, monitor_id = %monitor.id, "begin tx (poll state) failed");
+                continue;
+            }
+        };
+        let acquired: bool = match sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
             .bind(key)
-            .fetch_one(pool)
+            .fetch_one(&mut *tx)
             .await
         {
             Ok(b) => b,
             Err(e) => {
-                tracing::warn!(error = ?e, monitor_id = %monitor.id, "advisory_lock (poll state) failed");
+                tracing::warn!(error = ?e, monitor_id = %monitor.id, "advisory_xact_lock (poll state) failed");
+                let _ = tx.rollback().await;
                 continue;
             }
         };
         if !acquired {
+            let _ = tx.rollback().await;
             continue;
         }
 
@@ -223,12 +235,8 @@ async fn refresh_app_state(
             }
         }
 
-        if let Err(e) = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(key)
-            .execute(pool)
-            .await
-        {
-            tracing::warn!(error = ?e, monitor_id = %monitor.id, "advisory_unlock (poll state) failed");
+        if let Err(e) = tx.commit().await {
+            tracing::warn!(error = ?e, monitor_id = %monitor.id, "commit (poll state lock release) failed");
         }
     }
 }
@@ -284,19 +292,31 @@ async fn write_sample(
     ts: DateTime<Utc>,
 ) {
     let key = advisory_lock_key(monitor.id);
-    let acquired: bool = match sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+    // xact-scoped advisory lock — auto-released at commit/rollback. Avoids the
+    // session-vs-pool-connection mismatch that caused "you don't own a lock"
+    // NOTICEs from Postgres.
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(error = ?e, monitor_id = %monitor.id, "begin tx (write_sample) failed");
+            return;
+        }
+    };
+    let acquired: bool = match sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
         .bind(key)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await
     {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!(error = ?e, monitor_id = %monitor.id, "advisory_lock query failed");
+            tracing::warn!(error = ?e, monitor_id = %monitor.id, "advisory_xact_lock (write_sample) failed");
+            let _ = tx.rollback().await;
             return;
         }
     };
     if !acquired {
         // Another instance is on it; nothing to do.
+        let _ = tx.rollback().await;
         return;
     }
 
@@ -326,12 +346,8 @@ async fn write_sample(
         }
     }
 
-    if let Err(e) = sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(key)
-        .execute(pool)
-        .await
-    {
-        tracing::warn!(error = ?e, monitor_id = %monitor.id, "advisory_unlock failed");
+    if let Err(e) = tx.commit().await {
+        tracing::warn!(error = ?e, monitor_id = %monitor.id, "commit (write_sample lock release) failed");
     }
 }
 
