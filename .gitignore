@@ -1,7 +1,7 @@
 # Rust
 backend/target/
-backend/Cargo.lock
 *.rs.bk
+# Cargo.lock IS committed for binary crates (CC build uses --locked).
 
 # Node / Next.js
 frontend/node_modules/
