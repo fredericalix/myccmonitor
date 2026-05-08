@@ -111,22 +111,44 @@ async fn setup_webhook(
         &auth.access_secret,
     );
 
-    // Idempotent: if we already created a webhook for (user, org), delete the
-    // CC-side hook first so we don't accumulate duplicates. The DB row is
-    // upserted in one atomic step (ON CONFLICT) at the end, so the local view
-    // is always exactly one row per (user, org) pair.
-    if let Some(existing) =
-        webhook_configs::find_for_user_org(&state.pool, auth.id, &cc_org_id).await?
-    {
-        if let Some(old_id) = existing.cc_webhook_id.as_deref() {
-            if let Err(e) = cc.delete_webhook(&cc_org_id, old_id).await {
-                tracing::warn!(
-                    error = ?e,
-                    %cc_org_id,
-                    old_webhook_id = %old_id,
-                    "failed to delete pre-existing CC webhook; proceeding anyway"
-                );
+    // Idempotent: every webhook we have ever created on this org points at
+    // `{public_base_url}/webhooks/cc/{token}`. Wipe anything matching that
+    // prefix before creating a fresh one — bulletproof against orphans from
+    // before this fix shipped, rows where `cc_webhook_id` is NULL, and
+    // duplicates from a double-click.
+    let our_prefix = format!(
+        "{}/webhooks/cc/",
+        state.cfg.public_base_url.trim_end_matches('/')
+    );
+    match cc.list_webhooks(&cc_org_id).await {
+        Ok(hooks) => {
+            for hook in hooks {
+                let is_ours = hook.urls.iter().any(|u| u.url.starts_with(&our_prefix));
+                if !is_ours {
+                    continue;
+                }
+                if let Err(e) = cc.delete_webhook(&cc_org_id, &hook.id).await {
+                    tracing::warn!(
+                        error = ?e,
+                        %cc_org_id,
+                        webhook_id = %hook.id,
+                        "failed to delete stale CC webhook; proceeding anyway"
+                    );
+                } else {
+                    tracing::info!(
+                        %cc_org_id,
+                        webhook_id = %hook.id,
+                        "deleted stale CC webhook"
+                    );
+                }
             }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                %cc_org_id,
+                "failed to list CC webhooks before create; proceeding"
+            );
         }
     }
 
@@ -152,7 +174,7 @@ async fn setup_webhook(
         auth.id,
         &cc_org_id,
         &token,
-        cc_hook.id.as_deref(),
+        Some(&cc_hook.id),
         &events,
     )
     .await?;

@@ -81,8 +81,7 @@ pub struct CcAddonProvider {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CcWebhook {
-    #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     pub name: String,
     #[serde(default)]
     pub urls: Vec<CcWebhookUrl>,
@@ -235,6 +234,17 @@ impl<'a> CcClient<'a> {
         };
         let resp = self.post_json(&url, &body).await?;
         Ok(serde_json::from_str(&resp)?)
+    }
+
+    /// List every webhook attached to `owner_id` (org or user).
+    /// CC endpoint: GET /v2/notifications/webhooks/{ownerId}
+    pub async fn list_webhooks(&self, owner_id: &str) -> anyhow::Result<Vec<CcWebhook>> {
+        let url = format!(
+            "{}/v2/notifications/webhooks/{}",
+            self.cfg.cc_api_base_url, owner_id
+        );
+        let body = self.get(&url).await?;
+        Ok(serde_json::from_str(&body)?)
     }
 
     /// Delete a previously-created webhook.
