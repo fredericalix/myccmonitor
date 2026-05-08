@@ -112,3 +112,97 @@ export interface CreateGroupInput {
   description?: string;
   auto_rules?: AutoRules;
 }
+
+// ───── Rules / workflow engine ─────
+
+export type CompOp =
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "contains"
+  | "not_contains";
+
+export type LogicalOp = "and" | "or";
+
+export interface DurationSpec {
+  seconds: number;
+}
+
+export type Condition =
+  | {
+      type: "comparison";
+      field: string;
+      operator: CompOp;
+      value: unknown;
+      for_duration?: DurationSpec;
+    }
+  | {
+      type: "logical";
+      op: LogicalOp;
+      children: Condition[];
+    };
+
+export type Action =
+  | {
+      type: "set_monitor_state";
+      target_monitor_id: string;
+      state: string;
+      message?: string;
+      acknowledged?: boolean;
+    }
+  | {
+      type: "send_notification";
+      channel_id: string;
+      message: string;
+      subject?: string;
+    }
+  | {
+      type: "escalate";
+      delay_seconds: number;
+      target_rule_id: string;
+    };
+
+export interface Rule {
+  id: string;
+  user_id: string;
+  name: string;
+  is_enabled: boolean;
+  condition: Condition;
+  actions: Action[];
+  cooldown_seconds: number;
+  last_fired_at: string | null;
+  last_outcome_state: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  last_modified_at: string;
+}
+
+export interface UpsertRuleInput {
+  name: string;
+  is_enabled?: boolean;
+  condition: Condition;
+  actions: Action[];
+  cooldown_seconds?: number;
+  metadata?: Record<string, unknown>;
+  comment?: string;
+}
+
+export interface RuleFiring {
+  id: string;
+  rule_id: string | null;
+  user_id: string | null;
+  fired_at: string;
+  trigger_kind: string;
+  trigger_ref: string | null;
+  outcome: "matched" | "not_matched" | "cooldown_skipped" | "error";
+  actions_executed: unknown;
+  error_message: string | null;
+}
+
+export interface DryRunResult {
+  matched: boolean;
+  actions_that_would_run: number;
+}

@@ -1,9 +1,13 @@
 import type {
   CreateGroupInput,
+  DryRunResult,
   GroupView,
   Me,
   Monitor,
   Org,
+  Rule,
+  RuleFiring,
+  UpsertRuleInput,
   WebhookConfig,
 } from "./types";
 
@@ -71,5 +75,27 @@ export const api = {
   removeGroupMember: (groupId: string, monitorId: string) =>
     request<void>(`/api/groups/${groupId}/members/${monitorId}`, {
       method: "DELETE",
+    }),
+
+  listRules: () => request<Rule[]>("/api/rules"),
+  createRule: (input: UpsertRuleInput) =>
+    request<Rule>("/api/rules", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getRule: (id: string) => request<Rule>(`/api/rules/${id}`),
+  updateRule: (id: string, input: UpsertRuleInput) =>
+    request<Rule>(`/api/rules/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  deleteRule: (id: string) =>
+    request<void>(`/api/rules/${id}`, { method: "DELETE" }),
+  ruleFirings: (id: string) =>
+    request<RuleFiring[]>(`/api/rules/${id}/firings`),
+  testRule: (id: string) =>
+    request<DryRunResult>(`/api/rules/${id}/test`, {
+      method: "POST",
+      body: "{}",
     }),
 };
