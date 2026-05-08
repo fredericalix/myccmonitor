@@ -29,6 +29,11 @@ pub struct MonitorInput<'a> {
     pub cc_resource_id: Option<&'a str>,
     pub display_name: &'a str,
     pub metadata: Option<serde_json::Value>,
+    /// CC's view of the resource's state (`"ok"` / `"critical"` / `"unknown"`).
+    /// On INSERT this seeds `current_state`. On CONFLICT it self-heals only
+    /// when the existing row is still `unknown` and the new mapping isn't —
+    /// webhook-set states are never clobbered.
+    pub initial_state: &'a str,
 }
 
 /// Upsert a CC-backed monitor (cc_application or cc_addon) by
@@ -41,13 +46,25 @@ pub async fn upsert_cc(
     sqlx::query_as::<_, Monitor>(
         r#"
         INSERT INTO monitors
-            (user_id, cc_org_id, kind, cc_resource_id, display_name, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (user_id, cc_org_id, kind, cc_resource_id, display_name, metadata,
+             current_state, current_state_since)
+        VALUES ($1, $2, $3, $4, $5, $6, $7,
+                CASE WHEN $7 <> 'unknown' THEN now() ELSE NULL END)
         ON CONFLICT (user_id, cc_org_id, kind, cc_resource_id)
         WHERE cc_resource_id IS NOT NULL
         DO UPDATE SET
             display_name = EXCLUDED.display_name,
             metadata = EXCLUDED.metadata,
+            current_state = CASE
+                WHEN monitors.current_state = 'unknown' AND EXCLUDED.current_state <> 'unknown'
+                THEN EXCLUDED.current_state
+                ELSE monitors.current_state
+            END,
+            current_state_since = CASE
+                WHEN monitors.current_state = 'unknown' AND EXCLUDED.current_state <> 'unknown'
+                THEN now()
+                ELSE monitors.current_state_since
+            END,
             updated_at = now()
         RETURNING *
         "#,
@@ -58,6 +75,7 @@ pub async fn upsert_cc(
     .bind(input.cc_resource_id)
     .bind(input.display_name)
     .bind(input.metadata)
+    .bind(input.initial_state)
     .fetch_one(pool)
     .await
 }

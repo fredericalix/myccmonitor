@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::db;
 use crate::db::monitors::Monitor;
 use crate::metrics::{self, tokens::TokenCache};
+use crate::monitors::state_map;
 use crate::ws::{self, WsFrame};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
@@ -123,6 +124,12 @@ async fn poll_user_org(
         .into_iter()
         .partition(|m| m.kind == "cc_application");
 
+    // Refresh app state from CC's own view. Cheap (one list_applications call
+    // per (user, org) per tick) and bulletproof against missed webhooks.
+    if !apps.is_empty() {
+        refresh_app_state(pool, &cc, cc_org_id, &apps).await;
+    }
+
     if !apps.is_empty() {
         run_kind(pool, cfg, http, &cc, token_cache, user_id, cc_org_id, "app_id", &apps).await;
     }
@@ -133,6 +140,97 @@ async fn poll_user_org(
         .await;
     }
     Ok(())
+}
+
+/// One `list_applications` call per (user, org), then per-monitor advisory-
+/// locked `set_state_if_changed` so two backends don't both write. Silent
+/// no-op on stable fleets — only emits when CC's reported state actually
+/// differs from what we hold.
+async fn refresh_app_state(
+    pool: &PgPool,
+    cc: &CcClient<'_>,
+    cc_org_id: &str,
+    apps: &[Monitor],
+) {
+    let cc_apps = match cc.list_applications(cc_org_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = ?e, %cc_org_id, "list_applications (poll refresh) failed");
+            return;
+        }
+    };
+    let by_id: HashMap<&str, Option<&str>> = cc_apps
+        .iter()
+        .map(|a| (a.id.as_str(), a.state.as_deref()))
+        .collect();
+
+    let now = Utc::now();
+    for monitor in apps {
+        let Some(rid) = monitor.cc_resource_id.as_deref() else {
+            continue;
+        };
+        let Some(&cc_state) = by_id.get(rid) else {
+            continue;
+        };
+        let mapped = state_map::map_cc_app_state(cc_state);
+        if monitor.current_state == mapped {
+            continue;
+        }
+
+        let key = advisory_lock_key(monitor.id);
+        let acquired: bool = match sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(key)
+            .fetch_one(pool)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = ?e, monitor_id = %monitor.id, "advisory_lock (poll state) failed");
+                continue;
+            }
+        };
+        if !acquired {
+            continue;
+        }
+
+        match db::monitors::set_state_if_changed(pool, monitor.id, mapped, None).await {
+            Ok(Some((new_state, since))) => {
+                if let Err(e) = db::monitor_state_history::insert(
+                    pool, monitor.id, &new_state, None, now, "poll",
+                )
+                .await
+                {
+                    tracing::warn!(error = ?e, monitor_id = %monitor.id, "history insert (poll) failed");
+                }
+                if let Err(e) = ws::broadcast_via_pg(
+                    pool,
+                    cc_org_id,
+                    WsFrame::MonitorState {
+                        monitor_id: monitor.id,
+                        state: new_state,
+                        message: None,
+                        since: Some(since),
+                    },
+                )
+                .await
+                {
+                    tracing::warn!(error = ?e, monitor_id = %monitor.id, "ws broadcast (poll) failed");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(error = ?e, monitor_id = %monitor.id, "set_state_if_changed (poll) failed");
+            }
+        }
+
+        if let Err(e) = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(key)
+            .execute(pool)
+            .await
+        {
+            tracing::warn!(error = ?e, monitor_id = %monitor.id, "advisory_unlock (poll state) failed");
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

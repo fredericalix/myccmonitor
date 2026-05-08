@@ -164,6 +164,10 @@ async fn process_one(pool: &PgPool, payload: &[u8]) -> Result<()> {
                     cc_resource_id: Some(&routing.resource_id),
                     display_name: &routing.resource_id,
                     metadata: None,
+                    // Webhook owns the steady-state via apply_state_change below;
+                    // seed unknown so the history+broadcast it does next is the
+                    // canonical creation event.
+                    initial_state: "unknown",
                 },
             )
             .await?;
