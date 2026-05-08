@@ -124,6 +124,11 @@ async fn main() -> Result<()> {
         bus::WebhookProducer::build(&pulsar, &cc_webhooks_topic, &cfg.instance_id).await?;
     tracing::info!(topic = %cc_webhooks_topic, "Pulsar producer ready");
 
+    let escalations_topic = cfg.pulsar_topic("rule-escalations");
+    let escalation_producer =
+        bus::EscalationProducer::build(&pulsar, &escalations_topic, &cfg.instance_id).await?;
+    tracing::info!(topic = %escalations_topic, "Pulsar escalation producer ready");
+
     // Spawn the consumer in its own task. If it dies, log and don't bring the whole backend down —
     // the producer still works, webhooks keep accruing in the topic until restart.
     {
@@ -176,7 +181,29 @@ async fn main() -> Result<()> {
         bus: Arc::new(producer),
         ws_bus,
         warp10_token_cache,
+        escalation_producer: Arc::new(escalation_producer),
     };
+
+    // Phase 8 escalation consumer: re-evaluates rules when a delayed Pulsar
+    // message becomes due. Same Shared subscription model as the webhook
+    // consumer so multi-instance load-balances naturally.
+    {
+        let pulsar_clone = pulsar.clone();
+        let state_clone = state.clone();
+        let topic = escalations_topic.clone();
+        tokio::spawn(async move {
+            if let Err(e) = bus::escalations::run_consumer(
+                pulsar_clone,
+                topic,
+                "myccmonitor-escalator".to_string(),
+                state_clone,
+            )
+            .await
+            {
+                tracing::error!(error = ?e, "Escalation consumer task exited");
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/health", get(health))

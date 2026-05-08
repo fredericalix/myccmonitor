@@ -167,17 +167,23 @@ pub async fn execute(
             delay_seconds,
             target_rule_id,
         } => {
-            // Phase 6: log only. Phase 8 publishes a delayed message on the
-            // `rule-escalations` Pulsar topic and the consumer re-evaluates.
+            // Phase 8: schedule a delayed Pulsar message on `rule-escalations`.
+            // The broker holds it until `now + delay_seconds`; whatever instance
+            // is subscribed at that time picks it up and re-evaluates the target
+            // rule with Trigger::Escalation.
+            state
+                .escalation_producer
+                .schedule(user_id, *target_rule_id, rule_id, *delay_seconds)
+                .await?;
             tracing::info!(
                 rule_id = %rule_id,
                 target_rule_id = %target_rule_id,
                 delay_seconds,
-                "escalate stub (Phase 8 will deliver via Pulsar)"
+                "escalation scheduled on Pulsar"
             );
             Ok(json!({
                 "kind": "escalate",
-                "stubbed": true,
+                "scheduled": true,
                 "target_rule_id": target_rule_id,
                 "delay_seconds": delay_seconds,
             }))

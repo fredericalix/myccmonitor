@@ -1,10 +1,13 @@
 //! Apache Pulsar event bus: producer + consumer for `cc-webhooks`
-//! (30d retention, audit log) and `rule-escalations` (Phase 8).
+//! (30d retention, audit log) and `rule-escalations` (Phase 8 delayed
+//! delivery via `deliver_at_time`).
 
 pub mod consumer;
+pub mod escalations;
 pub mod message;
 pub mod producer;
 
+pub use escalations::{EscalationMessage, EscalationProducer};
 pub use message::BusMessage;
 pub use producer::WebhookProducer;
 

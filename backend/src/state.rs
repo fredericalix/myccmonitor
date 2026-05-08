@@ -1,4 +1,4 @@
-use crate::bus::WebhookProducer;
+use crate::bus::{EscalationProducer, WebhookProducer};
 use crate::config::Config;
 use crate::metrics::tokens::TokenCache;
 use crate::ws::OrgBus;
@@ -13,4 +13,5 @@ pub struct AppState {
     pub bus: Arc<WebhookProducer>,
     pub ws_bus: Arc<OrgBus>,
     pub warp10_token_cache: Arc<TokenCache>,
+    pub escalation_producer: Arc<EscalationProducer>,
 }
