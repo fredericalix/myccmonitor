@@ -11,6 +11,7 @@ import type {
   UpsertRuleInput,
 } from "@/services/types";
 import RuleEditor from "@/components/RuleEditor/RuleEditor";
+import { DebugPanel } from "@/components/RuleEditor/DebugPanel";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { ConfirmDialog } from "@/components/ui/Dialog";
@@ -31,6 +32,7 @@ export default function EditRulePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -141,8 +143,15 @@ export default function EditRulePage() {
         onSave={handleSave}
         onTest={handleTest}
         onDelete={() => setConfirmDelete(true)}
+        onDebug={() => setShowDebug(true)}
         busy={busy}
         saveLabel="Save"
+      />
+
+      <DebugPanel
+        ruleId={id}
+        open={showDebug}
+        onClose={() => setShowDebug(false)}
       />
 
       <ConfirmDialog

@@ -92,8 +92,23 @@ pub async fn dispatch(
         .await?
         .ok_or_else(|| anyhow::anyhow!("channel {channel_id} not found"))?;
     if !channel.enabled {
+        tracing::warn!(
+            %channel_id,
+            channel_name = %channel.name,
+            channel_kind = %channel.kind,
+            rule_id = %rule.id,
+            "channel disabled; aborting dispatch"
+        );
         bail!("channel '{}' is disabled", channel.name);
     }
+    tracing::info!(
+        %channel_id,
+        channel_name = %channel.name,
+        channel_kind = %channel.kind,
+        rule_id = %rule.id,
+        rule_name = %rule.name,
+        "dispatching notification"
+    );
 
     let adapter = for_kind(&channel.kind)?;
     let rendered = RenderedMessage {
@@ -110,6 +125,13 @@ pub async fn dispatch(
         }
         match adapter.send(&state.cfg, &state.http, &channel, &rendered).await {
             Ok(()) => {
+                tracing::info!(
+                    %channel_id,
+                    channel_kind = %channel.kind,
+                    attempt,
+                    rule_id = %rule.id,
+                    "notification delivered"
+                );
                 let _ = notification_channels::record_success(&state.pool, channel.id).await;
                 let alert_id = alerts::insert(
                     &state.pool,

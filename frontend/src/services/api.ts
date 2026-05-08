@@ -7,6 +7,7 @@ import type {
   NotificationChannel,
   Org,
   Rule,
+  RuleDebugResponse,
   RuleFiring,
   UpsertChannelInput,
   UpsertRuleInput,
@@ -100,6 +101,8 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
+  debugRule: (id: string) =>
+    request<RuleDebugResponse>(`/api/rules/${id}/debug`),
 
   listChannels: () => request<NotificationChannel[]>("/api/channels"),
   createChannel: (input: UpsertChannelInput) =>

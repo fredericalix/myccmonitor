@@ -232,3 +232,57 @@ export interface UpsertChannelInput {
   config: Record<string, unknown>;
   enabled?: boolean;
 }
+
+// ───── Rule debug ─────
+
+export interface CooldownState {
+  remaining_seconds: number;
+  cooldown_seconds: number;
+  last_fired_at: string | null;
+  last_outcome_state: string | null;
+  would_skip_due_to_cooldown: boolean;
+}
+
+export interface MonitorDebugInfo {
+  id: string;
+  display_name: string;
+  kind: string;
+  current_state: MonitorState;
+  current_state_since: string | null;
+  current_message: string | null;
+  held_for_seconds: number;
+}
+
+export interface GroupDebugInfo {
+  id: string;
+  name: string;
+  rolled_state: GroupRolledState;
+  critical_count: number;
+  warning_count: number;
+  ok_count: number;
+  unknown_count: number;
+  total: number;
+  member_ids: string[];
+}
+
+export interface ChannelDebugInfo {
+  id: string;
+  name: string;
+  kind: ChannelKind;
+  enabled: boolean;
+  failure_count: number;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_failure_message: string | null;
+}
+
+export interface RuleDebugResponse {
+  rule: Rule;
+  would_match_now: boolean;
+  condition_summary: unknown;
+  cooldown: CooldownState;
+  recent_firings: RuleFiring[];
+  monitors_referenced: MonitorDebugInfo[];
+  groups_referenced: GroupDebugInfo[];
+  channels_used: ChannelDebugInfo[];
+}

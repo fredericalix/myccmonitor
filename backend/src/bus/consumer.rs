@@ -8,13 +8,14 @@
 
 use crate::bus::BusMessage;
 use crate::db::{monitor_state_history, monitors, webhook_configs, webhook_dedup};
+use crate::rules::exec::{Trigger, trigger_for_monitor};
+use crate::state::AppState;
 use crate::webhooks::event::WebhookEnvelope;
 use crate::ws::{self, WsFrame};
 use anyhow::Result;
 use chrono::{Duration, Utc};
 use futures::TryStreamExt;
 use pulsar::{Consumer, Pulsar, SubType, TokioExecutor};
-use sqlx::PgPool;
 
 /// Map a CC webhook `event` name to a (new_state, message) pair plus a flag
 /// telling whether the resource should be deleted instead of updated.
@@ -77,7 +78,7 @@ pub async fn run(
     pulsar: Pulsar<TokioExecutor>,
     topic: String,
     subscription: String,
-    pool: PgPool,
+    state: AppState,
 ) -> Result<()> {
     let mut consumer: Consumer<Vec<u8>, _> = pulsar
         .consumer()
@@ -89,7 +90,7 @@ pub async fn run(
     tracing::info!(%topic, "Pulsar consumer started");
 
     while let Some(msg) = consumer.try_next().await? {
-        if let Err(e) = process_one(&pool, &msg.payload.data).await {
+        if let Err(e) = process_one(&state, &msg.payload.data).await {
             tracing::error!(error = ?e, "processing failed; acking + dropping (CC will not retry)");
         }
         let _ = consumer.ack(&msg).await;
@@ -98,7 +99,8 @@ pub async fn run(
     Ok(())
 }
 
-async fn process_one(pool: &PgPool, payload: &[u8]) -> Result<()> {
+async fn process_one(state: &AppState, payload: &[u8]) -> Result<()> {
+    let pool = &state.pool;
     let bus_msg: BusMessage = match serde_json::from_slice(payload) {
         Ok(m) => m,
         Err(e) => {
@@ -152,7 +154,7 @@ async fn process_one(pool: &PgPool, payload: &[u8]) -> Result<()> {
     match effect {
         EventEffect::Upsert {
             kind,
-            state,
+            state: new_state,
             message,
         } => {
             let monitor = monitors::upsert_cc(
@@ -171,9 +173,22 @@ async fn process_one(pool: &PgPool, payload: &[u8]) -> Result<()> {
                 },
             )
             .await?;
-            apply_state_change(pool, monitor.id, state, message, &bus_msg.cc_org_id, now).await?;
+            apply_state_change(
+                state,
+                bus_msg.user_id,
+                monitor.id,
+                new_state,
+                message,
+                &bus_msg.cc_org_id,
+                now,
+                &envelope.event,
+            )
+            .await?;
         }
-        EventEffect::SetState { state, message } => {
+        EventEffect::SetState {
+            state: new_state,
+            message,
+        } => {
             match monitors::find_by_cc_resource(
                 pool,
                 bus_msg.user_id,
@@ -183,8 +198,17 @@ async fn process_one(pool: &PgPool, payload: &[u8]) -> Result<()> {
             .await?
             {
                 Some(monitor) => {
-                    apply_state_change(pool, monitor.id, state, message, &bus_msg.cc_org_id, now)
-                        .await?;
+                    apply_state_change(
+                        state,
+                        bus_msg.user_id,
+                        monitor.id,
+                        new_state,
+                        message,
+                        &bus_msg.cc_org_id,
+                        now,
+                        &envelope.event,
+                    )
+                    .await?;
                 }
                 None => {
                     tracing::info!(
@@ -213,47 +237,68 @@ async fn process_one(pool: &PgPool, payload: &[u8]) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn apply_state_change(
-    pool: &PgPool,
+    state: &AppState,
+    user_id: uuid::Uuid,
     monitor_id: uuid::Uuid,
-    state: &str,
+    new_state: &str,
     message: Option<&str>,
     cc_org_id: &str,
     now: chrono::DateTime<Utc>,
+    event: &str,
 ) -> Result<()> {
-    if let Some((new_state, since)) = monitors::set_state_if_changed(pool, monitor_id, state, message).await? {
-        monitor_state_history::insert(pool, monitor_id, &new_state, message, now, "webhook").await?;
-        ws::broadcast_via_pg(
-            pool,
-            cc_org_id,
-            WsFrame::MonitorState {
-                monitor_id,
-                state: new_state,
-                message: message.map(|s| s.to_string()),
-                since: Some(since),
-            },
-        )
-        .await?;
-        // Phase 6 hook: fire rules that watch this monitor.
-        if let Some(monitor) =
-            crate::db::monitors::find_by_id_for_user(pool, fetch_user_id_for_monitor(pool, monitor_id).await?, monitor_id)
-                .await?
-        {
-            // Best-effort: errors are logged inside; we don't want to fail webhook ack.
-            // Constructing AppState here is awkward (we'd need it threaded through the consumer);
-            // for Phase 6 we trigger via a dedicated lightweight path that takes only what it
-            // needs (pool + user_id) and re-loads any other state.
-            let _ = monitor; // Keep the load for symmetry — it can be used by Phase 6.x optimisations.
+    let pool = &state.pool;
+    let Some((after, since)) =
+        monitors::set_state_if_changed(pool, monitor_id, new_state, message).await?
+    else {
+        // No transition — nothing to do. (Same state, idempotent webhook.)
+        tracing::debug!(
+            %event,
+            %monitor_id,
+            current = %new_state,
+            "webhook event did not change monitor state; skipping rule trigger"
+        );
+        return Ok(());
+    };
+    monitor_state_history::insert(pool, monitor_id, &after, message, now, "webhook").await?;
+    ws::broadcast_via_pg(
+        pool,
+        cc_org_id,
+        WsFrame::MonitorState {
+            monitor_id,
+            state: after.clone(),
+            message: message.map(|s| s.to_string()),
+            since: Some(since),
+        },
+    )
+    .await?;
+
+    tracing::info!(
+        %event,
+        %monitor_id,
+        %user_id,
+        new_state = %after,
+        "webhook applied state transition; triggering dependent rules"
+    );
+
+    // Fire rules that watch this monitor. Best-effort: webhook ack must succeed
+    // even if rule eval errors out.
+    match trigger_for_monitor(state, user_id, monitor_id, Trigger::Webhook).await {
+        Ok(fired) => {
+            tracing::info!(
+                %monitor_id,
+                fired,
+                "trigger_for_monitor done (webhook)"
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                error = ?e,
+                %monitor_id,
+                "trigger_for_monitor failed (webhook); continuing"
+            );
         }
     }
     Ok(())
-}
-
-async fn fetch_user_id_for_monitor(pool: &PgPool, monitor_id: uuid::Uuid) -> Result<uuid::Uuid> {
-    let id: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT user_id FROM monitors WHERE id = $1")
-            .bind(monitor_id)
-            .fetch_optional(pool)
-            .await?;
-    id.ok_or_else(|| anyhow::anyhow!("monitor {monitor_id} disappeared mid-process"))
 }

@@ -8,16 +8,16 @@
 
 use crate::api::cc_client::CcClient;
 use crate::auth::decrypt_user_oauth;
-use crate::config::Config;
 use crate::db;
 use crate::db::monitors::Monitor;
-use crate::metrics::{self, tokens::TokenCache};
+use crate::metrics;
 use crate::monitors::state_map;
+use crate::rules::exec::{Trigger, trigger_for_monitor};
+use crate::state::AppState;
 use crate::ws::{self, WsFrame};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio::time::{MissedTickBehavior, interval};
 use uuid::Uuid;
@@ -27,12 +27,7 @@ const PURGE_EVERY_N_TICKS: u32 = 60;
 const PURGE_AGE_HOURS: i64 = 24;
 const POLL_BATCH_LIMIT: i64 = 200;
 
-pub async fn run(
-    pool: PgPool,
-    cfg: Arc<Config>,
-    http: reqwest::Client,
-    token_cache: Arc<TokenCache>,
-) -> anyhow::Result<()> {
+pub async fn run(state: AppState) -> anyhow::Result<()> {
     let mut tick = interval(POLL_TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut counter: u32 = 0;
@@ -44,25 +39,21 @@ pub async fn run(
 
         if counter % PURGE_EVERY_N_TICKS == 0 {
             let cutoff = Utc::now() - Duration::hours(PURGE_AGE_HOURS);
-            match db::metric_samples::purge_older_than(&pool, cutoff).await {
+            match db::metric_samples::purge_older_than(&state.pool, cutoff).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(rows = n, "purged old metric_samples"),
                 Err(e) => tracing::warn!(error = ?e, "purge_older_than failed"),
             }
         }
 
-        if let Err(e) = poll_once(&pool, &cfg, &http, &token_cache).await {
+        if let Err(e) = poll_once(&state).await {
             tracing::error!(error = ?e, "poll cycle errored");
         }
     }
 }
 
-async fn poll_once(
-    pool: &PgPool,
-    cfg: &Config,
-    http: &reqwest::Client,
-    token_cache: &TokenCache,
-) -> anyhow::Result<()> {
+async fn poll_once(state: &AppState) -> anyhow::Result<()> {
+    let pool = &state.pool;
     let due: Vec<Monitor> = sqlx::query_as::<_, Monitor>(
         r#"
         SELECT * FROM monitors
@@ -95,9 +86,7 @@ async fn poll_once(
     }
 
     for ((user_id, cc_org_id), monitors) in by_org {
-        if let Err(e) =
-            poll_user_org(pool, cfg, http, token_cache, user_id, &cc_org_id, monitors).await
-        {
+        if let Err(e) = poll_user_org(state, user_id, &cc_org_id, monitors).await {
             tracing::warn!(error = ?e, %user_id, cc_org_id = %cc_org_id, "poll_user_org failed");
         }
     }
@@ -106,14 +95,16 @@ async fn poll_once(
 }
 
 async fn poll_user_org(
-    pool: &PgPool,
-    cfg: &Config,
-    http: &reqwest::Client,
-    token_cache: &TokenCache,
+    state: &AppState,
     user_id: Uuid,
     cc_org_id: &str,
     monitors: Vec<Monitor>,
 ) -> anyhow::Result<()> {
+    let pool = &state.pool;
+    let cfg = state.cfg.as_ref();
+    let http = &state.http;
+    let token_cache = state.warp10_token_cache.as_ref();
+
     let user = db::users::find_by_id(pool, user_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("user {user_id} not found"))?;
@@ -127,17 +118,14 @@ async fn poll_user_org(
     // Refresh app state from CC's own view. Cheap (one list_applications call
     // per (user, org) per tick) and bulletproof against missed webhooks.
     if !apps.is_empty() {
-        refresh_app_state(pool, &cc, cc_org_id, &apps).await;
+        refresh_app_state(state, user_id, &cc, cc_org_id, &apps).await;
     }
 
     if !apps.is_empty() {
-        run_kind(pool, cfg, http, &cc, token_cache, user_id, cc_org_id, "app_id", &apps).await;
+        run_kind(state, &cc, user_id, cc_org_id, "app_id", &apps).await;
     }
     if !addons.is_empty() {
-        run_kind(
-            pool, cfg, http, &cc, token_cache, user_id, cc_org_id, "addon_id", &addons,
-        )
-        .await;
+        run_kind(state, &cc, user_id, cc_org_id, "addon_id", &addons).await;
     }
     Ok(())
 }
@@ -147,11 +135,13 @@ async fn poll_user_org(
 /// no-op on stable fleets — only emits when CC's reported state actually
 /// differs from what we hold.
 async fn refresh_app_state(
-    pool: &PgPool,
+    state: &AppState,
+    user_id: Uuid,
     cc: &CcClient<'_>,
     cc_org_id: &str,
     apps: &[Monitor],
 ) {
+    let pool = &state.pool;
     let cc_apps = match cc.list_applications(cc_org_id).await {
         Ok(v) => v,
         Err(e) => {
@@ -205,8 +195,10 @@ async fn refresh_app_state(
             continue;
         }
 
+        let mut transitioned = false;
         match db::monitors::set_state_if_changed(pool, monitor.id, mapped, None).await {
             Ok(Some((new_state, since))) => {
+                transitioned = true;
                 if let Err(e) = db::monitor_state_history::insert(
                     pool, monitor.id, &new_state, None, now, "poll",
                 )
@@ -219,7 +211,7 @@ async fn refresh_app_state(
                     cc_org_id,
                     WsFrame::MonitorState {
                         monitor_id: monitor.id,
-                        state: new_state,
+                        state: new_state.clone(),
                         message: None,
                         since: Some(since),
                     },
@@ -228,6 +220,12 @@ async fn refresh_app_state(
                 {
                     tracing::warn!(error = ?e, monitor_id = %monitor.id, "ws broadcast (poll) failed");
                 }
+                tracing::info!(
+                    monitor_id = %monitor.id,
+                    %user_id,
+                    new_state = %new_state,
+                    "poll detected state transition; will trigger dependent rules"
+                );
             }
             Ok(None) => {}
             Err(e) => {
@@ -238,21 +236,35 @@ async fn refresh_app_state(
         if let Err(e) = tx.commit().await {
             tracing::warn!(error = ?e, monitor_id = %monitor.id, "commit (poll state lock release) failed");
         }
+
+        // Fire dependent rules AFTER the lock is released, so rule actions that
+        // re-enter set_state_if_changed don't deadlock on the same advisory key.
+        if transitioned {
+            match trigger_for_monitor(state, user_id, monitor.id, Trigger::Poll { monitor_id: monitor.id }).await {
+                Ok(fired) => {
+                    tracing::info!(monitor_id = %monitor.id, fired, "trigger_for_monitor done (poll state)");
+                }
+                Err(e) => {
+                    tracing::error!(error = ?e, monitor_id = %monitor.id, "trigger_for_monitor failed (poll state)");
+                }
+            }
+        }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_kind(
-    pool: &PgPool,
-    cfg: &Config,
-    http: &reqwest::Client,
+    state: &AppState,
     cc: &CcClient<'_>,
-    token_cache: &TokenCache,
     user_id: Uuid,
     cc_org_id: &str,
     label_name: &str,
     monitors: &[Monitor],
 ) {
+    let pool = &state.pool;
+    let cfg = state.cfg.as_ref();
+    let http = &state.http;
+    let token_cache = state.warp10_token_cache.as_ref();
+
     let ids: Vec<String> = monitors
         .iter()
         .filter_map(|m| m.cc_resource_id.clone())
@@ -279,18 +291,21 @@ async fn run_kind(
             continue;
         };
         let (cpu, mem) = map.get(rid).copied().unwrap_or((None, None));
-        write_sample(pool, monitor, cpu, mem, cc_org_id, now).await;
+        write_sample(state, user_id, monitor, cpu, mem, cc_org_id, now).await;
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_sample(
-    pool: &PgPool,
+    state: &AppState,
+    user_id: Uuid,
     monitor: &Monitor,
     cpu: Option<f32>,
     mem: Option<f32>,
     cc_org_id: &str,
     ts: DateTime<Utc>,
 ) {
+    let pool = &state.pool;
     let key = advisory_lock_key(monitor.id);
     // xact-scoped advisory lock — auto-released at commit/rollback. Avoids the
     // session-vs-pool-connection mismatch that caused "you don't own a lock"
@@ -348,6 +363,21 @@ async fn write_sample(
 
     if let Err(e) = tx.commit().await {
         tracing::warn!(error = ?e, monitor_id = %monitor.id, "commit (write_sample lock release) failed");
+    }
+
+    // Fire dependent rules so threshold conditions on cpu/mem are evaluated
+    // every poll cycle. Best-effort outside the lock.
+    if cpu_d.is_some() || mem_d.is_some() {
+        if let Err(e) = trigger_for_monitor(
+            state,
+            user_id,
+            monitor.id,
+            Trigger::Poll { monitor_id: monitor.id },
+        )
+        .await
+        {
+            tracing::error!(error = ?e, monitor_id = %monitor.id, "trigger_for_monitor failed (write_sample)");
+        }
     }
 }
 

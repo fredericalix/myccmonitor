@@ -6,6 +6,7 @@ use crate::db::rules::{self, Rule, RuleVersion};
 use crate::error::AppError;
 use crate::rules::condition::{Action, Condition, validate_actions, validate_condition};
 use crate::rules::cycle::{self, PendingRule};
+use crate::rules::debug::{self as rule_debug, RuleDebugResponse};
 use crate::rules::dependencies;
 use crate::rules::exec::{self, DryRunResult};
 use crate::state::AppState;
@@ -28,6 +29,7 @@ pub fn router() -> Router<AppState> {
             post(restore_version),
         )
         .route("/api/rules/{id}/test", post(test_dry_run))
+        .route("/api/rules/{id}/debug", get(get_debug))
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +162,21 @@ async fn test_dry_run(
         .ok_or_else(|| AppError::NotFound(format!("rule {id}")))?;
     Ok(Json(
         exec::evaluate_dry(&state, &rule)
+            .await
+            .map_err(AppError::Internal)?,
+    ))
+}
+
+async fn get_debug(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RuleDebugResponse>, AppError> {
+    let rule = rules::find(&state.pool, auth.id, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("rule {id}")))?;
+    Ok(Json(
+        rule_debug::build(&state, auth.id, &rule)
             .await
             .map_err(AppError::Internal)?,
     ))

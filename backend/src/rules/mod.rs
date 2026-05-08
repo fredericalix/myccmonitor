@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod condition;
 pub mod cycle;
+pub mod debug;
 pub mod dependencies;
 pub mod evaluator;
 pub mod exec;

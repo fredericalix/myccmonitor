@@ -148,10 +148,23 @@ pub async fn trigger_for_monitor_with_depth(
     .fetch_all(&state.pool)
     .await?;
 
+    let direct_count = direct_rule_ids.len();
+    let group_count = group_rule_ids.len();
     let mut all_rule_ids = direct_rule_ids;
     all_rule_ids.extend(group_rule_ids);
     all_rule_ids.sort();
     all_rule_ids.dedup();
+
+    tracing::info!(
+        %monitor_id,
+        %user_id,
+        chain_depth,
+        trigger_kind = trigger.kind(),
+        direct_count,
+        group_count,
+        unique_rule_count = all_rule_ids.len(),
+        "trigger_for_monitor: dependent rules looked up"
+    );
 
     let mut fired = 0u32;
     for rule_id in all_rule_ids {
@@ -160,6 +173,12 @@ pub async fn trigger_for_monitor_with_depth(
             None => continue,
         };
         let outcome = execute_rule(state, &rule, trigger, chain_depth, in_flight).await?;
+        tracing::info!(
+            %rule_id,
+            rule_name = %rule.name,
+            outcome = ?outcome,
+            "rule evaluated"
+        );
         if matches!(outcome, Outcome::Matched) {
             fired += 1;
         }
@@ -175,14 +194,30 @@ pub async fn execute_rule(
     in_flight: &InFlight,
 ) -> Result<Outcome> {
     if !rule.is_enabled {
+        tracing::info!(rule_id = %rule.id, rule_name = %rule.name, "rule disabled; skipping");
         return Ok(Outcome::NotMatched);
     }
+
+    tracing::info!(
+        rule_id = %rule.id,
+        rule_name = %rule.name,
+        chain_depth,
+        trigger_kind = trigger.kind(),
+        "execute_rule entry"
+    );
 
     let condition: Condition = serde_json::from_value(rule.condition.clone())?;
     let actions: Vec<Action> = serde_json::from_value(rule.actions.clone())?;
 
     // Evaluate
     let matched = evaluate(&state.pool, rule.user_id, &condition).await?;
+    tracing::info!(
+        rule_id = %rule.id,
+        rule_name = %rule.name,
+        matched,
+        action_count = actions.len(),
+        "condition evaluated"
+    );
 
     // Cooldown: skip if last_fired_at + cooldown > now AND the verdict hasn't
     // changed (recovery-exempt: we always let a transition fire).
@@ -192,6 +227,13 @@ pub async fn execute_rule(
             let in_cooldown = elapsed < rule.cooldown_seconds as i64;
             let verdict_unchanged = prev == "matched";
             if in_cooldown && verdict_unchanged {
+                tracing::info!(
+                    rule_id = %rule.id,
+                    rule_name = %rule.name,
+                    elapsed_seconds = elapsed,
+                    cooldown_seconds = rule.cooldown_seconds,
+                    "cooldown active and verdict unchanged; skipping"
+                );
                 rule_firings::insert(
                     &state.pool,
                     rule.id,
@@ -243,6 +285,14 @@ pub async fn execute_rule(
             }
         }
     }
+
+    tracing::info!(
+        rule_id = %rule.id,
+        rule_name = %rule.name,
+        action_count = actions.len(),
+        had_error,
+        "actions executed"
+    );
 
     let outcome = if had_error { "error" } else { "matched" };
     rule_firings::insert(

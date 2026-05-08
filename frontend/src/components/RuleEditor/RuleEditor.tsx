@@ -25,6 +25,7 @@ import dagre from "dagre";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowsClockwise,
+  Bug,
   Funnel,
   Info,
   Intersect,
@@ -81,6 +82,7 @@ interface RuleEditorProps {
   onSave: (input: UpsertRuleInput) => Promise<void>;
   onTest?: () => void;
   onDelete?: () => void;
+  onDebug?: () => void;
   busy?: boolean;
   saveLabel?: string;
 }
@@ -275,6 +277,7 @@ function RuleEditorInner({
   onSave,
   onTest,
   onDelete,
+  onDebug,
   busy,
   saveLabel,
 }: RuleEditorProps) {
@@ -413,6 +416,12 @@ function RuleEditorInner({
             s
           </label>
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            {onDebug ? (
+              <Button variant="secondary" size="sm" onClick={onDebug} disabled={busy}>
+                <Bug weight="bold" size={14} />
+                Debug
+              </Button>
+            ) : null}
             {onTest ? (
               <Button variant="secondary" size="sm" onClick={onTest} disabled={busy}>
                 <PlayCircle weight="bold" size={14} />

@@ -129,21 +129,6 @@ async fn main() -> Result<()> {
         bus::EscalationProducer::build(&pulsar, &escalations_topic, &cfg.instance_id).await?;
     tracing::info!(topic = %escalations_topic, "Pulsar escalation producer ready");
 
-    // Spawn the consumer in its own task. If it dies, log and don't bring the whole backend down —
-    // the producer still works, webhooks keep accruing in the topic until restart.
-    {
-        let pulsar = pulsar.clone();
-        let pool = pool.clone();
-        let topic = cc_webhooks_topic.clone();
-        tokio::spawn(async move {
-            if let Err(e) =
-                bus::consumer::run(pulsar, topic, "myccmonitor-processor".to_string(), pool).await
-            {
-                tracing::error!(error = ?e, "Pulsar consumer task exited with error");
-            }
-        });
-    }
-
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
@@ -162,27 +147,43 @@ async fn main() -> Result<()> {
 
     // Phase 4 Warp10 poller: shared in-memory cache for the metrics tokens.
     let warp10_token_cache = Arc::new(metrics::tokens::TokenCache::new());
-    {
-        let pool = pool.clone();
-        let cfg = cfg.clone();
-        let http = http.clone();
-        let cache = warp10_token_cache.clone();
-        tokio::spawn(async move {
-            if let Err(e) = monitors::poller::run(pool, cfg, http, cache).await {
-                tracing::error!(error = ?e, "Warp10 poller task exited");
-            }
-        });
-    }
 
+    // Build AppState early so spawned background tasks (webhook consumer,
+    // poller, escalation consumer) all share the same state and can fire
+    // dependent rules through `rules::exec::trigger_for_monitor`.
     let state = AppState {
         cfg: cfg.clone(),
-        pool,
-        http,
+        pool: pool.clone(),
+        http: http.clone(),
         bus: Arc::new(producer),
         ws_bus,
         warp10_token_cache,
         escalation_producer: Arc::new(escalation_producer),
     };
+
+    // Spawn the webhook consumer in its own task. If it dies, log and don't bring the whole backend down —
+    // the producer still works, webhooks keep accruing in the topic until restart.
+    {
+        let pulsar = pulsar.clone();
+        let state = state.clone();
+        let topic = cc_webhooks_topic.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                bus::consumer::run(pulsar, topic, "myccmonitor-processor".to_string(), state).await
+            {
+                tracing::error!(error = ?e, "Pulsar consumer task exited with error");
+            }
+        });
+    }
+
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = monitors::poller::run(state).await {
+                tracing::error!(error = ?e, "Warp10 poller task exited");
+            }
+        });
+    }
 
     // Phase 8 escalation consumer: re-evaluates rules when a delayed Pulsar
     // message becomes due. Same Shared subscription model as the webhook
