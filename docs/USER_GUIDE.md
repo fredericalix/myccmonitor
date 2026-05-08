@@ -1,0 +1,243 @@
+# myccmonitor — User Guide
+
+A walkthrough of the deployed app at <https://myccmonitor-frontend.cleverapps.io>. This guide is for anyone who supervises Clever Cloud applications and add-ons through myccmonitor — no Rust or TypeScript knowledge required. For the engineering side, see [`DEVELOPER_GUIDE.md`](./DEVELOPER_GUIDE.md).
+
+---
+
+## What myccmonitor does
+
+myccmonitor watches your Clever Cloud applications and add-ons and tells you when something is wrong — a deploy fails, an app stops, CPU stays pegged, an add-on goes down, or any composite condition you've defined. It listens to Clever Cloud webhooks for instant notifications and polls Warp10 every minute for metrics, then runs your **workflow rules** to decide whether to set monitor states, send notifications, or escalate.
+
+The app is multi-tenant: signing in with your Clever Cloud account creates an isolated workspace. Each user only ever sees their own organisations, monitors, groups, rules, and channels.
+
+## Signing in
+
+1. Open <https://myccmonitor-frontend.cleverapps.io>.
+2. Click **Sign in with Clever Cloud**.
+3. You'll be redirected to `console.clever-cloud.com` to authorise the `myccmonitor-prod` OAuth consumer.
+4. Approve the request. Clever Cloud asks for these scopes:
+   - `access-personal-information` — to look up your user profile (email, name).
+   - `access-organisations` — to list orgs you belong to.
+   - `manage-organisations-applications` — required to install webhooks on your orgs and read application state.
+   - `manage-organisations-services` — required to fetch Warp10 metrics tokens.
+5. After authorisation you land on `/orgs`. A 7-day session cookie keeps you signed in across visits; you can log out at any time from the user menu in the sidebar (bottom of the screen).
+
+If sign-in fails with `OAuth callback is invalid`, the consumer rights are too narrow — ping the backend operator. Once they widen the consumer, you must sign in again to get a fresh access token; old tokens carry the old grant.
+
+## Setting up webhooks
+
+Each Clever Cloud organisation needs to send its events to myccmonitor.
+
+1. Go to **Organisations** (`/orgs`) — the first page after sign-in.
+2. For each org you want to monitor, click **Setup webhook**.
+3. The button is **idempotent**: clicking it again deletes any existing myccmonitor webhook on the org and creates a fresh one. Use this if you suspect the webhook is broken or the URL has changed.
+
+Once installed, the webhook receives these events:
+
+- `APPLICATION_CREATION`, `APPLICATION_DELETION`, `APPLICATION_REDEPLOY`, `APPLICATION_STOP`
+- `GIT_PUSH`, `DEPLOYMENT_SUCCESS`, `DEPLOYMENT_FAIL`
+- `ADDON_CREATION`, `ADDON_DELETION`
+
+Each event maps to a monitor state change:
+
+| CC event | Monitor state |
+| --- | --- |
+| `DEPLOYMENT_SUCCESS` | `ok` |
+| `DEPLOYMENT_FAIL` | `critical` |
+| `APPLICATION_STOP` | `critical` |
+| `APPLICATION_REDEPLOY` / `GIT_PUSH` | `unknown` (deploying) |
+| `APPLICATION_CREATION` / `ADDON_CREATION` | the monitor row is created |
+| `APPLICATION_DELETION` / `ADDON_DELETION` | the monitor row is deleted |
+
+State transitions trigger your rules. If you've set up a rule that sends a Slack notification on `state == critical`, that's how it gets fired.
+
+## The org dashboard
+
+Click any org from `/orgs` to land on its dashboard at `/orgs/{cc_org_id}`.
+
+**Layout.** Monitors are grouped into three sections:
+
+- **Applications** — your CC apps (`cc_application` kind).
+- **Add-ons** — your databases, queues, etc. (`cc_addon`).
+- **Synthetic monitors** — virtual monitors that have no CC backing; their state is mutated only by `setMonitorState` rule actions. Useful for roll-ups like `prod_health`.
+
+Each monitor is a card with:
+
+- **State dot + name** — the dot animates with a "ping" pulse when state is `critical`. State badges are colour-coded: green (`ok`), amber (`warning`), terracotta (`critical`), warm grey (`unknown`).
+- **CPU and MEM bars** — gradient warm-coloured bars filled with the latest Warp10 reading (peach below 75 %, amber 75–89 %, terracotta ≥ 90 %). Updates every 60 s via the poller.
+- **Message** — the last status message (e.g. `deploy succeeded`).
+- **"Since"** timestamp — how long the monitor has held its current state.
+
+When a fresh frame arrives over WebSocket, the whole card briefly pulses with a warm shadow so you can spot what just changed.
+
+**Live indicator.** The sidebar bottom shows a small status pill: green dot **Live** (WebSocket connected), amber **Reconnecting**, red **Offline**. If you see Offline for more than ~30 s, refresh the page; the data on screen may be stale.
+
+**State source of truth.** Three paths can change a monitor's state:
+1. **Webhook arrival** — instant.
+2. **The 60-second poller** — reads CC's `state` field on `GET /v2/organisations/{id}/applications`. Catches anything a webhook missed (network glitch, app stopped without an event).
+3. **A rule action** — a rule with `setMonitorState` writes to the target monitor.
+
+Webhooks always win when present (delta truth > poll truth in the same tick).
+
+## Groups
+
+Groups let you treat fleets of monitors as one. Use them when a rule should react to "any prod app critical" or "≥ 2 EU monitors warning".
+
+### Creating a group
+
+1. Go to **Groups** (`/groups`).
+2. Click **+ New group**.
+3. Fill in:
+   - **Name** — required, unique per user.
+   - **Description** — optional.
+   - **Auto-match name regex** — optional. A POSIX-style regex applied to `monitor.display_name`. Matching monitors are automatically included in the group.
+   - **Auto-match kinds** — optional checkboxes (`cc_application`, `cc_addon`, `synthetic`). If set, only monitors of these kinds count.
+4. Click **Create group**.
+
+Auto-matching rules are conjunctive — a monitor is included only if **all** the criteria (name regex AND kinds AND tags) match.
+
+### Group detail page
+
+`/groups/{id}` shows:
+
+- **Members** — manual + auto-matched, with their current state badges. You can remove manual members or add new ones via the dropdown picker.
+- **Auto-grouping rules** — a JSON readout of the current criteria.
+- **Rolled-up state** — `critical` if any member critical, else `warning` if any warning, else `ok`. Counts are shown alongside.
+
+Groups can be referenced from rule conditions as `group:{group_id}:state`, `group:{group_id}:critical_count`, `group:{group_id}:warning_count`, `group:{group_id}:total_count`, etc.
+
+## Rules — the visual editor
+
+Rules are the heart of myccmonitor. They watch monitors (or groups), evaluate composite conditions, and execute actions. Open the list at `/rules`.
+
+### Creating a new rule
+
+Click **+ New rule** to land on a blank ReactFlow canvas.
+
+**Toolbar (top).** Rule name, an `enabled` checkbox, a **cooldown** number (seconds), and four buttons on the right: **Save**, **Dry-run**, **Delete** (existing rules only), **Debug** (existing rules only).
+
+**Add-node panel (left).** Click to add nodes:
+- **Condition** — compares a property of a monitor or group to a value. Pick `monitor` / `group`, then the target, the property (`state`, `cpu`, `mem`, `critical_count`, …), the operator (`==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `not_contains`), the expected value, and an optional `for X` duration (e.g. `5m`, `30s`, `2h`). The duration only applies when comparing `monitor:{id}:state`; for other properties it is parsed but currently treated as instantaneous.
+- **Logical (AND/OR)** — combines conditions. Choose `AND` (all true) or `OR` (any true), and how many input handles (2–6).
+- **Action** — what to do on a match. Three kinds:
+  - `setMonitorState` — write a new state to a monitor (chains: re-triggers any rule watching that monitor).
+  - `sendNotification` — pick a channel + write a message body (handlebars templating supported, e.g. `{{monitor.display_name}}`).
+  - `escalate` — wait `delay_seconds` then re-evaluate a target rule. Survives backend restarts (delivered via Pulsar).
+
+**Wiring.**
+- Connect Condition outputs into Logical inputs (or directly into the Rule output).
+- Connect the Logical output into the **Rule output** node (the gold "Rule output" pill).
+- Connect the Rule output's right side into one or more Action nodes — they run in **parallel**.
+
+Click **Re-layout** to auto-arrange the graph left-to-right.
+
+### Cooldown
+
+Cooldown prevents notification storms. After a positive evaluation, `last_fired_at` is updated; subsequent positive evaluations within `last_fired_at + cooldown_seconds` are recorded as `cooldown_skipped` and don't fire actions.
+
+**Recovery-exempt:** if the verdict transitions (e.g. previously matched → not matched, or warning → critical), the cooldown is bypassed. So a recovering app always notifies.
+
+### Saving
+
+When you click **Save**:
+
+- Name must be non-empty, ≥ 1 action node connected.
+- Every monitor / group / rule / channel reference must belong to your user (cross-tenant references return 403).
+- A static cycle check runs across the rule DAG (`rules → monitors-they-write → rules-that-watch-them`); cycles are rejected.
+- Versions are auto-snapshotted (last 5 kept).
+
+If validation fails, a red toast tells you why.
+
+### Dry-run
+
+Click **Dry-run** to evaluate the rule against the current state without executing any actions. The toast shows `MATCH · N actions would run` or `no match`.
+
+### Debug
+
+Click **Debug** to open a snapshot panel with everything you need to understand why a rule did or did not fire:
+
+- **Verdict box** — `Would match now` (green) or `Would not match` (grey), updated on each open.
+- **Cooldown box** — remaining seconds, last fired timestamp, last outcome (`matched` / `not_matched` / `cooldown_skipped` / `error`), and a flag if cooldown would currently skip the next match.
+- **Monitors referenced** — every monitor cited in the condition tree, with its live state, since timestamp, and `held_for_seconds`.
+- **Groups referenced** — every group cited, with rolled-up state and breakdown.
+- **Channels used** — every channel cited by `sendNotification` actions, with enabled flag, failure count, last success / failure timestamps, and the last failure message in red if any.
+- **Recent firings** — last 10 entries from the audit log (matched / not_matched / cooldown_skipped / error), each with timestamp + trigger kind.
+- **Condition tree** — the JSON tree annotated per leaf with `field`, `operator`, `expected`, `actual`, and the leaf's `verdict`. Lets you see exactly which comparison failed.
+
+The Debug panel is read-only — it never mutates state.
+
+## Notification channels
+
+Channels are the destinations a `sendNotification` action writes to. Manage them at `/channels`.
+
+### Creating a channel
+
+Click **+ New channel** and pick the **Kind**:
+
+- **Email (SMTP).** Input a list of recipients as **chips** (type, press Enter, repeat). Optional `reply_to` and `subject_prefix`. Uses the SMTP host configured in the backend env.
+- **Slack.** Paste a Slack Incoming Webhook URL: `https://hooks.slack.com/services/...`.
+- **Discord.** Paste a Discord Webhook URL: `https://discord.com/api/webhooks/...`.
+- **Generic webhook.** Choose `POST` or `PUT`, enter a URL, and add **headers** as repeatable key/value pairs. The body is JSON: `{ "subject": "...", "body": "..." }`.
+
+A live JSON preview on the right shows the exact `config` blob that gets persisted to the database.
+
+### Channel health
+
+Each channel card shows:
+
+- **Enabled / disabled** badge — disabled channels skip dispatch.
+- **`{n} failures`** badge — the count of consecutive failures since the last success. Reset to 0 on every successful send.
+- **Last success at** and **last failure** — timestamps + the last failure message in red.
+
+If a channel keeps failing, fix the credentials or the URL and the count will reset on the next successful send. Rules referencing a disabled channel fail their `sendNotification` action and the rule is logged with outcome `error` — the rule still records its firing in the audit log, just without the side effect.
+
+## Light / dark theme
+
+A sun/moon icon in the sidebar bottom toggles between the two themes:
+
+- **Light** — soft pastel ivory and chocolate text with peach accents. Default.
+- **Dark warm** — chocolate-espresso background, cream text, lumineux orange accents. Better for long supervision sessions.
+
+Your choice is persisted in `localStorage`. On first visit the app picks the theme from your OS preference (`prefers-color-scheme`).
+
+## Troubleshooting
+
+### "I clicked Setup webhook but events aren't arriving"
+
+1. Check the org's webhook in the Clever Cloud console — it should point at `https://myccmonitor-frontend.cleverapps.io/webhooks/cc/{token}` (a long random suffix).
+2. Click **Setup webhook** again — it deletes the old hook and creates a fresh one (idempotent).
+3. Verify the OAuth consumer rights include `manage-organisations-applications`. If a CC error 6201 ("you are not allowed to access this organisation's applications") appears, the consumer is too narrow.
+4. Trigger a fake event (e.g. redeploy a tiny app). You should see the monitor's state badge change live within ~1 s.
+
+### "My rule isn't firing"
+
+1. Open the rule and click **Debug**.
+2. Read the **verdict** — does the condition currently evaluate to true? If not, the **condition tree** below shows which leaf failed (`actual` vs `expected`).
+3. Check the **cooldown** — if `would skip` is set, an earlier match is still in cooldown.
+4. Check the **channels used** section — any channel disabled or with a recent failure?
+5. Check the **monitors referenced** section — does the monitor have the state you expect? If it's `unknown`, no webhook has arrived yet.
+6. Check **recent firings** — was the rule recently evaluated with `not_matched` or `error`? `error` rows include the underlying exception in the audit log.
+
+### "The page is stale"
+
+Look at the WebSocket indicator in the sidebar. If it's **Offline**, refresh the page. If it stays Offline after a refresh, the backend is unreachable — check `https://myccmonitor-backend.cleverapps.io/health`.
+
+### "I see (unknown) state"
+
+Either:
+- No webhook has arrived for that monitor yet (newly created apps stay `unknown` until their first deploy event), **or**
+- The 60-second poller hasn't completed a cycle since the monitor was created. Wait one minute and refresh.
+
+If a monitor has been `unknown` for ≥ 5 minutes despite the app being up on CC, check the webhook setup (above).
+
+### "Notification arrived but to the wrong place"
+
+Every notification is recorded in the audit log (`alerts` table). Check the rule's recent firings via the Debug panel — each `matched` firing has the action summaries. If the channel ID looks wrong, edit the rule's action node and re-save.
+
+### "The rule editor crashed"
+
+Refresh the page. If it crashes again, check the browser DevTools console — the error will mention the file and line. Report it with the rule ID; the backend has a `GET /api/rules/:id` endpoint that returns the JSON shape so a developer can reproduce locally.
+
+---
+
+That's everything you need to be productive in myccmonitor. For deeper engineering details — workflow engine internals, multi-instance coordination, webhook lifecycle, deploy flow — see [`DEVELOPER_GUIDE.md`](./DEVELOPER_GUIDE.md).

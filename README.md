@@ -21,9 +21,15 @@ npm install
 npm run dev                                       # http://localhost:3000
 ```
 
+## Documentation
+
+- [`docs/USER_GUIDE.md`](./docs/USER_GUIDE.md) — end-user walkthrough of the deployed UI: signing in, webhook setup, the org dashboard, groups, the visual rule editor, notification channels, the debug panel, theme toggle, troubleshooting.
+- [`docs/DEVELOPER_GUIDE.md`](./docs/DEVELOPER_GUIDE.md) — English distillation of `CLAUDE.md` for engineers contributing to the codebase.
+- [`CLAUDE.md`](./CLAUDE.md) — canonical spec / agent doc / phase log. Source of truth.
+
 ## Stack
 
-Rust 1.85+ / Axum / sqlx / tokio · Next.js 15 / React 19 / Tailwind / shadcn/ui / ReactFlow + Dagre · PostgreSQL · Apache Pulsar · Clever Cloud as deploy target.
+Rust 1.85+ / Axum / sqlx / tokio · Next.js 16 / React 19 / Tailwind v4 / hand-rolled UI primitives / ReactFlow + Dagre · PostgreSQL · Apache Pulsar · Clever Cloud as deploy target.
 
 ## License
 
