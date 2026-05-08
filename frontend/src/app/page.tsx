@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/services/api";
 import type { Me } from "@/services/types";
+import { LogoutButton } from "@/components/LogoutButton";
 
 export default function Home() {
   const [me, setMe] = useState<Me | null | "loading">("loading");
@@ -52,12 +53,15 @@ export default function Home() {
               </span>
               .
             </p>
-            <Link
-              href="/orgs"
-              className="inline-flex items-center rounded-md bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-slate-800"
-            >
-              View your organisations →
-            </Link>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/orgs"
+                className="inline-flex items-center rounded-md bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-slate-800"
+              >
+                View your organisations →
+              </Link>
+              <LogoutButton />
+            </div>
           </div>
         )}
       </div>

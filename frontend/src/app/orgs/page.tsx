@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/services/api";
 import type { Org } from "@/services/types";
+import { LogoutButton } from "@/components/LogoutButton";
 
 export default function OrgsPage() {
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -74,6 +75,7 @@ export default function OrgsPage() {
           >
             ← Home
           </Link>
+          <LogoutButton />
         </div>
       </div>
 

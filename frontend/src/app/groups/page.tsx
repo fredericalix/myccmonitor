@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api, ApiError } from "@/services/api";
 import type { GroupView } from "@/services/types";
 import { RolledStateBadge } from "@/components/RolledStateBadge";
+import { LogoutButton } from "@/components/LogoutButton";
 
 export default function GroupsPage() {
   const [groups, setGroups] = useState<GroupView[]>([]);
@@ -97,9 +98,12 @@ export default function GroupsPage() {
         <h1 className="text-3xl font-bold tracking-tight text-slate-900">
           Monitor groups
         </h1>
-        <Link href="/orgs" className="text-sm text-slate-500 hover:text-slate-900">
-          ← Organisations
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link href="/orgs" className="text-sm text-slate-500 hover:text-slate-900">
+            ← Organisations
+          </Link>
+          <LogoutButton />
+        </div>
       </div>
 
       <form

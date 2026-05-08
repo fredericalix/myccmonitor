@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/services/api";
 import type { Rule } from "@/services/types";
+import { LogoutButton } from "@/components/LogoutButton";
 
 export default function RulesPage() {
   const [rules, setRules] = useState<Rule[]>([]);
@@ -49,6 +50,7 @@ export default function RulesPage() {
           <Link href="/orgs" className="text-slate-500 hover:text-slate-900">
             ← Organisations
           </Link>
+          <LogoutButton />
         </div>
       </div>
 

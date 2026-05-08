@@ -8,6 +8,7 @@ import type {
   NotificationChannel,
   UpsertChannelInput,
 } from "@/services/types";
+import { LogoutButton } from "@/components/LogoutButton";
 
 const KINDS: { value: ChannelKind; label: string; configHint: string }[] = [
   {
@@ -131,9 +132,12 @@ export default function ChannelsPage() {
         <h1 className="text-3xl font-bold tracking-tight text-slate-900">
           Notification channels
         </h1>
-        <Link href="/orgs" className="text-sm text-slate-500 hover:text-slate-900">
-          ← Organisations
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link href="/orgs" className="text-sm text-slate-500 hover:text-slate-900">
+            ← Organisations
+          </Link>
+          <LogoutButton />
+        </div>
       </div>
 
       <form
