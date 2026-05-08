@@ -23,8 +23,14 @@ clever oauth-consumers create myccmonitor-prod \
     --description "myccmonitor (prod)" \
     --url       "https://myccmonitor-frontend.cleverapps.io" \
     --base-url  "https://myccmonitor-frontend.cleverapps.io" \
-    --rights all \
+    --picture   "https://www.clever-cloud.com/favicon.ico" \
+    --rights    "access-personal-information,access-organisations,manage-organisations-applications,manage-organisations-services" \
     --org $ORG
+# Rights breakdown:
+#   access-personal-information       → /v2/self
+#   access-organisations              → list orgs
+#   manage-organisations-applications → list apps + addons of an org (CC's "access" suffix only exists for manage); also gates webhook creation per error 6201
+#   manage-organisations-services     → manipulate notification webhooks attached to the org
 clever oauth-consumers get <key-from-create> --with-secret    # save these for step 5
 
 # 3. Create the backend app
