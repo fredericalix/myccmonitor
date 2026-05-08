@@ -160,6 +160,19 @@ impl<'a> CcClient<'a> {
         Ok(resp_body)
     }
 
+    async fn delete(&self, url: &str) -> anyhow::Result<()> {
+        let auth = self.sign("DELETE", url);
+        let resp = self.http.delete(url).header("Authorization", auth).send().await?;
+        let status = resp.status();
+        // 404 ⇒ already gone, treat as success so re-running setup is safe
+        // even if the webhook was removed from the CC console.
+        if !status.is_success() && status.as_u16() != 404 {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("CC DELETE {url} → {status}: {body}");
+        }
+        Ok(())
+    }
+
     pub async fn list_organisations(&self) -> anyhow::Result<Vec<CcOrganisation>> {
         let url = format!("{}/v2/organisations", self.cfg.cc_api_base_url);
         let body = self.get(&url).await?;
@@ -222,5 +235,17 @@ impl<'a> CcClient<'a> {
         };
         let resp = self.post_json(&url, &body).await?;
         Ok(serde_json::from_str(&resp)?)
+    }
+
+    /// Delete a previously-created webhook.
+    /// CC endpoint: DELETE /v2/notifications/webhooks/{ownerId}/{id}.
+    /// 404 is treated as success so re-running setup_webhook is idempotent
+    /// even if the hook was removed out-of-band from the CC console.
+    pub async fn delete_webhook(&self, owner_id: &str, webhook_id: &str) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/v2/notifications/webhooks/{}/{}",
+            self.cfg.cc_api_base_url, owner_id, webhook_id
+        );
+        self.delete(&url).await
     }
 }

@@ -104,6 +104,32 @@ async fn setup_webhook(
         .await?
         .ok_or_else(|| AppError::Forbidden)?;
 
+    let cc = CcClient::new(
+        &state.http,
+        &state.cfg,
+        &auth.access_token,
+        &auth.access_secret,
+    );
+
+    // Idempotent: if we already created a webhook for (user, org), delete the
+    // CC-side hook first so we don't accumulate duplicates. The DB row is
+    // upserted in one atomic step (ON CONFLICT) at the end, so the local view
+    // is always exactly one row per (user, org) pair.
+    if let Some(existing) =
+        webhook_configs::find_for_user_org(&state.pool, auth.id, &cc_org_id).await?
+    {
+        if let Some(old_id) = existing.cc_webhook_id.as_deref() {
+            if let Err(e) = cc.delete_webhook(&cc_org_id, old_id).await {
+                tracing::warn!(
+                    error = ?e,
+                    %cc_org_id,
+                    old_webhook_id = %old_id,
+                    "failed to delete pre-existing CC webhook; proceeding anyway"
+                );
+            }
+        }
+    }
+
     // 32 random bytes → b64url, 43 chars.
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -115,12 +141,6 @@ async fn setup_webhook(
         token
     );
 
-    let cc = CcClient::new(
-        &state.http,
-        &state.cfg,
-        &auth.access_token,
-        &auth.access_secret,
-    );
     let cc_hook = cc
         .create_webhook(&cc_org_id, "myccmonitor", &target_url, SUBSCRIBED_EVENTS)
         .await
