@@ -17,11 +17,13 @@ use crate::metrics::warp10_client::execute_warpscript;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-/// Max ids per Warp10 request. Each id contributes 5 FETCH blocks (~960
-/// chars), so 12 ids ≈ 12 KB script. Above ~30 ids the WarpScript starts
-/// taking >60 s on CC's Warp10 and times out — verified in prod with a
-/// 44-id batch generating a 42 KB script that hit the 60 s ceiling.
-const WARP10_BATCH_SIZE: usize = 12;
+/// Max ids per Warp10 request. Verified in prod 2026-05-09: 12-id chunks
+/// produce 31 KB scripts that still time out at 60 s — Warp10 is slow on
+/// `mapper.rate` over 5 m of counter data even on small batches. Drop to
+/// 3 to keep each script under ~10 KB and Warp10 round-trip well under
+/// the timeout. Reqwest's connection pool reuses sockets so the extra
+/// requests are cheap.
+const WARP10_BATCH_SIZE: usize = 3;
 
 /// Fetch the latest cpu / mem / disk / net_in / net_out for a batch of CC
 /// resources (apps and addons) belonging to the same org. CC's Warp10 keys
