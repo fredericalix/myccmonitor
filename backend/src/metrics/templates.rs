@@ -52,9 +52,13 @@ pub fn metrics_last_script(token: &str, label_name: &str, ids: &[String]) -> Str
 /// endpoint to enumerate which metric classes CC's Warp10 actually has for
 /// a given app — answers "why is disk/net always null for this app?". Cheap:
 /// FIND returns no datapoints.
+///
+/// FIND signature: `TOKEN CLASS_REGEX LABELS_MAP FIND` (3 params on the
+/// stack — NOT wrapped in a list like FETCH). Returns one map per matching
+/// GTS with its class and labels.
 pub fn find_classes_script(token: &str, label_name: &str, id: &str) -> String {
     format!(
-        "[ '{token}' '~.*' {{ '{label}' '{id}' }} NOW 1 h ] FIND",
+        "'{token}' '~.*' {{ '{label}' '{id}' }} FIND",
         token = token,
         label = label_name,
         id = id
