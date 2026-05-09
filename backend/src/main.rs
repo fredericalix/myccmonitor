@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
     tracing::info!(topic = %escalations_topic, "Pulsar escalation producer ready");
 
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(60))
         .build()?;
 
     // Per-instance WebSocket bus + LISTEN/NOTIFY bridge.
