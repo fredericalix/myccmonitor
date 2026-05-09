@@ -17,12 +17,22 @@ use crate::metrics::warp10_client::execute_warpscript;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// Max ids per Warp10 request. Each id contributes 5 FETCH blocks (~960
+/// chars), so 12 ids ≈ 12 KB script. Above ~30 ids the WarpScript starts
+/// taking >60 s on CC's Warp10 and times out — verified in prod with a
+/// 44-id batch generating a 42 KB script that hit the 60 s ceiling.
+const WARP10_BATCH_SIZE: usize = 12;
+
 /// Fetch the latest cpu / mem / disk / net_in / net_out for a batch of CC
 /// resources (apps and addons) belonging to the same org. CC's Warp10 keys
 /// both kinds under the `app_id` label — for addons, the value must be the
 /// addon's `realId`, not its `id`. Caller passes those ids in `metrics_ids`.
 /// Returns `{ metrics_id -> MetricsTuple }`. Resources with no recent samples
 /// in Warp10 are absent from the map.
+///
+/// Splits `metrics_ids` into chunks of `WARP10_BATCH_SIZE` and runs the chunks
+/// in parallel — keeps each request small enough to fit comfortably under the
+/// 60 s HTTP timeout while letting the wall-clock cost scale with N/12 not N.
 pub async fn fetch_metrics(
     cfg: &Config,
     http: &reqwest::Client,
@@ -37,7 +47,44 @@ pub async fn fetch_metrics(
         return Ok(HashMap::new());
     }
     let token = tokens::ensure_token(cache, cc, user_id, cc_org_id).await?;
-    let script = metrics_last_script(&token, label_name, metrics_ids);
-    let value = execute_warpscript(http, &cfg.warp10_endpoint, &script).await?;
-    Ok(split_metrics(&value, label_name))
+    let chunks: Vec<&[String]> = metrics_ids.chunks(WARP10_BATCH_SIZE).collect();
+    let endpoint = &cfg.warp10_endpoint;
+
+    // Fire all chunk requests in parallel. One slow chunk can't mask the
+    // others; one failing chunk doesn't lose the rest.
+    let futures = chunks.into_iter().map(|chunk| {
+        let script = metrics_last_script(&token, label_name, chunk);
+        async move {
+            let value = execute_warpscript(http, endpoint, &script).await?;
+            Ok::<HashMap<String, MetricsTuple>, anyhow::Error>(
+                split_metrics(&value, label_name),
+            )
+        }
+    });
+    let results = futures::future::join_all(futures).await;
+
+    let mut out: HashMap<String, MetricsTuple> = HashMap::new();
+    let mut had_success = false;
+    let mut last_err: Option<anyhow::Error> = None;
+    for r in results {
+        match r {
+            Ok(map) => {
+                had_success = true;
+                out.extend(map);
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "fetch_metrics chunk failed");
+                last_err = Some(e);
+            }
+        }
+    }
+    // If every chunk failed, surface the last error so the caller still sees a
+    // failure. If at least one succeeded, return the partial map — better to
+    // paint metrics for some monitors than none.
+    if !had_success {
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+    }
+    Ok(out)
 }
