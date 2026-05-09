@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUp } from "@phosphor-icons/react";
+import { ArrowDown, ArrowUp, Bug } from "@phosphor-icons/react";
 import type { MetricSnapshot, Monitor } from "@/services/types";
 import { MetricBar, type MetricBarState } from "./MetricBar";
 import { StateBadge } from "./StateBadge";
+import { MonitorDebugDialog } from "./MonitorDebugDialog";
 import { cn } from "@/lib/cn";
 
 const LOADING_FALLBACK_MS = 90_000;
@@ -85,10 +86,27 @@ export function MonitorCard({
     return () => clearTimeout(t);
   }, [metrics, hydrated, showMetrics]);
 
-  let barState: MetricBarState = "data";
-  if (!metrics) {
-    barState = hydrated && loadExpired ? "no-data" : "loading";
-  }
+  // Global state for the "no sample yet" case. Once a sample arrives, we
+  // switch to per-metric resolution so disk/net can show "n/a" individually
+  // when CC's Warp10 just doesn't emit them for this app, even though
+  // cpu/mem are fine.
+  const globalState: MetricBarState = !metrics
+    ? hydrated && loadExpired
+      ? "no-data"
+      : "loading"
+    : "data";
+
+  // Per-metric: if we have a sample but this specific value is null, the
+  // metric is unsupported by CC for this runtime — render as "n/a" rather
+  // than the ambiguous "—".
+  const perMetric = (v: number | null | undefined): MetricBarState =>
+    metrics === undefined
+      ? globalState
+      : v === null || v === undefined
+        ? "unavailable"
+        : "data";
+
+  const [debugOpen, setDebugOpen] = useState(false);
 
   return (
     <div
@@ -140,13 +158,31 @@ export function MonitorCard({
 
       {showMetrics ? (
         <div className="mt-4 space-y-2">
-          <MetricBar label="CPU" value={metrics?.cpu ?? null} state={barState} />
-          <MetricBar label="MEM" value={metrics?.mem ?? null} state={barState} />
-          <MetricBar label="DISK" value={metrics?.disk ?? null} state={barState} />
+          <MetricBar
+            label="CPU"
+            value={metrics?.cpu ?? null}
+            state={perMetric(metrics?.cpu)}
+          />
+          <MetricBar
+            label="MEM"
+            value={metrics?.mem ?? null}
+            state={perMetric(metrics?.mem)}
+          />
+          <MetricBar
+            label="DISK"
+            value={metrics?.disk ?? null}
+            state={perMetric(metrics?.disk)}
+          />
           <NetLine
             netIn={metrics?.net_in ?? null}
             netOut={metrics?.net_out ?? null}
-            state={barState}
+            state={
+              metrics === undefined
+                ? globalState
+                : metrics.net_in === null && metrics.net_out === null
+                  ? "unavailable"
+                  : "data"
+            }
           />
         </div>
       ) : null}
@@ -159,6 +195,27 @@ export function MonitorCard({
 
       {since ? (
         <p className="mt-2 text-[11px] text-text-subtle">since {since}</p>
+      ) : null}
+
+      {monitor.cc_org_id && monitor.kind !== "synthetic" ? (
+        <button
+          type="button"
+          onClick={() => setDebugOpen(true)}
+          aria-label="Debug monitor"
+          className="absolute bottom-2 right-2 rounded-full p-1.5 text-text-subtle opacity-0 transition-opacity hover:bg-accent-soft hover:text-accent-strong group-hover:opacity-100"
+        >
+          <Bug weight="duotone" size={14} />
+        </button>
+      ) : null}
+
+      {monitor.cc_org_id ? (
+        <MonitorDebugDialog
+          ccOrgId={monitor.cc_org_id}
+          monitorId={monitor.id}
+          monitorName={monitor.display_name}
+          open={debugOpen}
+          onClose={() => setDebugOpen(false)}
+        />
       ) : null}
     </div>
   );
@@ -178,6 +235,14 @@ function NetLine({
       <div className="flex items-center gap-2 text-[11px] text-text-subtle pt-1">
         <span className="w-9 font-mono uppercase tracking-wider">NET</span>
         <div className="h-2 flex-1 overflow-hidden rounded-full ring-1 ring-inset ring-border/60 animate-warm-shimmer" />
+      </div>
+    );
+  }
+  if (state === "unavailable") {
+    return (
+      <div className="flex items-center gap-2 pt-1 text-[11px] text-text-subtle">
+        <span className="w-9 font-mono uppercase tracking-wider">NET</span>
+        <span className="font-mono italic">n/a</span>
       </div>
     );
   }

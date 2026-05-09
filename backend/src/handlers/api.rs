@@ -4,10 +4,11 @@
 use crate::api::{CcClient, SUBSCRIBED_EVENTS};
 use crate::auth::AuthenticatedUser;
 use crate::db::metric_samples::{self, MetricSample};
-use crate::db::monitors::Monitor;
+use crate::db::monitors::{self, Monitor};
 use crate::db::orgs::{self, Org, OrgInput};
 use crate::db::webhook_configs::{self, WebhookConfig};
 use crate::error::AppError;
+use crate::metrics;
 use crate::monitors::sync;
 use crate::state::AppState;
 use axum::Json;
@@ -15,8 +16,10 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use base64::Engine;
+use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::Serialize;
+use uuid::Uuid;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -25,6 +28,115 @@ pub fn router() -> Router<AppState> {
         .route("/api/orgs/{cc_org_id}/webhook", post(setup_webhook))
         .route("/api/orgs/{cc_org_id}/monitors", get(list_monitors))
         .route("/api/orgs/{cc_org_id}/snapshots", get(list_snapshots))
+        .route(
+            "/api/orgs/{cc_org_id}/monitors/{monitor_id}/debug",
+            get(monitor_debug),
+        )
+}
+
+/// Five Warp10 classes the poller queries on every cycle. Re-listed here so
+/// the debug payload can compute `missing_classes = expected ∖ warp10` and
+/// answer "why is disk/net null for this app?" in one round-trip.
+const EXPECTED_WARP10_CLASSES: &[&str] = &[
+    "cpu.usage_user",
+    "mem.used_percent",
+    "disk.used_percent",
+    "net.bytes_recv",
+    "net.bytes_sent",
+];
+
+#[derive(Serialize)]
+struct MonitorDebugResponse {
+    monitor: Monitor,
+    cc_metrics_id: Option<String>,
+    /// Every class Warp10 actually has data for over the last hour, scoped
+    /// to this monitor's metrics id. Includes system classes the poller
+    /// doesn't consume — useful for debugging.
+    warp10_classes: Vec<String>,
+    expected_classes: &'static [&'static str],
+    /// `expected_classes ∖ warp10_classes`. If non-empty, those classes are
+    /// genuinely not emitted by CC for this app — the bars will stay "n/a".
+    missing_classes: Vec<String>,
+    latest_sample: Option<MetricSample>,
+    last_poll_at: Option<DateTime<Utc>>,
+    note: Option<&'static str>,
+}
+
+async fn monitor_debug(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path((cc_org_id, monitor_id)): Path<(String, Uuid)>,
+) -> Result<Json<MonitorDebugResponse>, AppError> {
+    // Multi-tenant: org ownership AND monitor.user_id == auth.id (the latter
+    // is enforced by find_by_id_for_user). Defense in depth: also verify
+    // monitor.cc_org_id == cc_org_id so a leaked monitor_id can't be queried
+    // through a foreign org URL.
+    let _org = orgs::find_by_user_and_cc_id(&state.pool, auth.id, &cc_org_id)
+        .await?
+        .ok_or(AppError::Forbidden)?;
+    let monitor = monitors::find_by_id_for_user(&state.pool, auth.id, monitor_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("monitor {monitor_id} not found")))?;
+    if monitor.cc_org_id.as_deref() != Some(cc_org_id.as_str()) {
+        return Err(AppError::Forbidden);
+    }
+
+    let last_poll_at = monitor.last_poll_at;
+    let latest_sample = metric_samples::latest(&state.pool, monitor.id).await?;
+
+    // Synthetic monitors and any monitor without a metrics id can't be
+    // probed against Warp10. Return early with an explanation rather than
+    // making a useless API call.
+    let Some(metrics_id) = monitor.cc_metrics_id.clone() else {
+        return Ok(Json(MonitorDebugResponse {
+            monitor,
+            cc_metrics_id: None,
+            warp10_classes: Vec::new(),
+            expected_classes: EXPECTED_WARP10_CLASSES,
+            missing_classes: EXPECTED_WARP10_CLASSES.iter().map(|s| s.to_string()).collect(),
+            latest_sample,
+            last_poll_at,
+            note: Some("monitor has no Warp10 mapping (synthetic or pre-migration row)"),
+        }));
+    };
+
+    let cc = CcClient::new(
+        &state.http,
+        &state.cfg,
+        &auth.access_token,
+        &auth.access_secret,
+    );
+    let warp10_classes = metrics::fetch_classes(
+        &state.cfg,
+        &state.http,
+        &cc,
+        &state.warp10_token_cache,
+        auth.id,
+        &cc_org_id,
+        "app_id",
+        &metrics_id,
+    )
+    .await
+    .map_err(|e| AppError::CcApi(format!("warp10 FIND: {e}")))?;
+
+    let warp10_set: std::collections::HashSet<&str> =
+        warp10_classes.iter().map(String::as_str).collect();
+    let missing_classes: Vec<String> = EXPECTED_WARP10_CLASSES
+        .iter()
+        .filter(|c| !warp10_set.contains(*c))
+        .map(|s| s.to_string())
+        .collect();
+
+    Ok(Json(MonitorDebugResponse {
+        monitor,
+        cc_metrics_id: Some(metrics_id),
+        warp10_classes,
+        expected_classes: EXPECTED_WARP10_CLASSES,
+        missing_classes,
+        latest_sample,
+        last_poll_at,
+        note: None,
+    }))
 }
 
 async fn list_snapshots(

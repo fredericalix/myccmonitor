@@ -1,6 +1,6 @@
 import { cn } from "@/lib/cn";
 
-export type MetricBarState = "loading" | "no-data" | "data";
+export type MetricBarState = "loading" | "no-data" | "data" | "unavailable";
 
 function gradient(value: number): string {
   if (value >= 90) return "from-critical/80 to-critical";
@@ -17,12 +17,26 @@ export function MetricBar({
   value: number | null;
   state?: MetricBarState;
 }) {
+  // The caller's `state` decides loading / unavailable / data; if the value
+  // is null we override to whichever "no-value" variant best matches.
   const effectiveState: MetricBarState =
     value === null || value === undefined || Number.isNaN(value)
       ? state === "loading"
         ? "loading"
-        : "no-data"
+        : state === "unavailable"
+          ? "unavailable"
+          : "no-data"
       : "data";
+
+  if (effectiveState === "unavailable") {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-text-subtle">
+        <span className="w-9 font-mono uppercase tracking-wider">{label}</span>
+        <div className="h-2 flex-1 rounded-full bg-bg/40 ring-1 ring-inset ring-border/30" />
+        <span className="w-10 text-right font-mono italic">n/a</span>
+      </div>
+    );
+  }
 
   if (effectiveState === "loading") {
     return (

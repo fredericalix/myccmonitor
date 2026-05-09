@@ -290,6 +290,17 @@ export interface ChannelDebugInfo {
   last_failure_message: string | null;
 }
 
+export interface MonitorDebugResponse {
+  monitor: Monitor;
+  cc_metrics_id: string | null;
+  warp10_classes: string[];
+  expected_classes: string[];
+  missing_classes: string[];
+  latest_sample: (MetricSnapshot & { monitor_id: string }) | null;
+  last_poll_at: string | null;
+  note: string | null;
+}
+
 export interface RuleDebugResponse {
   rule: Rule;
   would_match_now: boolean;

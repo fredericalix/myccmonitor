@@ -47,6 +47,46 @@ pub fn metrics_last_script(token: &str, label_name: &str, ids: &[String]) -> Str
     script
 }
 
+/// Build a Warp10 FIND query that returns metadata (class + labels) for
+/// every GTS matching `(label_name = id)`. Used by the per-monitor debug
+/// endpoint to enumerate which metric classes CC's Warp10 actually has for
+/// a given app — answers "why is disk/net always null for this app?". Cheap:
+/// FIND returns no datapoints.
+pub fn find_classes_script(token: &str, label_name: &str, id: &str) -> String {
+    format!(
+        "[ '{token}' '~.*' {{ '{label}' '{id}' }} NOW 1 h ] FIND",
+        token = token,
+        label = label_name,
+        id = id
+    )
+}
+
+/// Pull unique class names from a Warp10 FIND response. The response is a
+/// JSON array of GTS-shaped objects (or empty `[]`); we only care about each
+/// object's `c` field. Sorted + deduped for stable display.
+pub fn extract_classes(value: &serde_json::Value) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut out = BTreeSet::new();
+
+    fn walk(v: &serde_json::Value, out: &mut BTreeSet<String>) {
+        match v {
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    walk(item, out);
+                }
+            }
+            serde_json::Value::Object(obj) => {
+                if let Some(serde_json::Value::String(c)) = obj.get("c") {
+                    out.insert(c.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(value, &mut out);
+    out.into_iter().collect()
+}
+
 /// Walk the GTS response tree and pick the last numeric point per
 /// (id, metric class). Negative values on `net.*` (counter reset artefacts
 /// even after `mapper.rate`) are dropped.

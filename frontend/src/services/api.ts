@@ -5,6 +5,7 @@ import type {
   Me,
   MetricSnapshotApi,
   Monitor,
+  MonitorDebugResponse,
   NotificationChannel,
   Org,
   Rule,
@@ -63,6 +64,10 @@ export const api = {
   listSnapshots: (ccOrgId: string) =>
     request<MetricSnapshotApi[]>(
       `/api/orgs/${encodeURIComponent(ccOrgId)}/snapshots`,
+    ),
+  monitorDebug: (ccOrgId: string, monitorId: string) =>
+    request<MonitorDebugResponse>(
+      `/api/orgs/${encodeURIComponent(ccOrgId)}/monitors/${encodeURIComponent(monitorId)}/debug`,
     ),
   logout: () => request<void>("/auth/logout", { method: "POST", body: "{}" }),
 
