@@ -47,18 +47,19 @@ pub fn metrics_last_script(token: &str, label_name: &str, ids: &[String]) -> Str
     script
 }
 
-/// Build a Warp10 FIND query that returns metadata (class + labels) for
-/// every GTS matching `(label_name = id)`. Used by the per-monitor debug
-/// endpoint to enumerate which metric classes CC's Warp10 actually has for
-/// a given app — answers "why is disk/net always null for this app?". Cheap:
-/// FIND returns no datapoints.
-///
+/// Build a Warp10 FIND query that returns metadata for every GTS in the
+/// `cpu.* / mem.* / disk.* / net.*` families belonging to this resource.
 /// FIND signature: `TOKEN CLASS_REGEX LABELS_MAP FIND` (3 params on the
-/// stack — NOT wrapped in a list like FETCH). Returns one map per matching
-/// GTS with its class and labels.
+/// stack, NOT wrapped in a list like FETCH).
+///
+/// Initially we used `'~.*'` (match every class) but on CC's Warp10 that's
+/// too broad and takes minutes — the request hangs and the upstream proxy
+/// returns 500. Restricting to the 4 prefixes we actually consume is two
+/// orders of magnitude faster while still letting us spot CC alternative
+/// class names if any (e.g. `network.in` vs `net.bytes_recv`).
 pub fn find_classes_script(token: &str, label_name: &str, id: &str) -> String {
     format!(
-        "'{token}' '~.*' {{ '{label}' '{id}' }} FIND",
+        "'{token}' '~^(cpu|mem|disk|net)\\..*' {{ '{label}' '{id}' }} FIND",
         token = token,
         label = label_name,
         id = id
