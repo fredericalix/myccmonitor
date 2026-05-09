@@ -38,14 +38,37 @@ export default function OrgDashboard() {
   const [monitors, setMonitors] = useState<Monitor[]>([]);
   const [metrics, setMetrics] = useState<Record<string, MetricSnapshot>>({});
   const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    api
-      .listMonitors(ccOrgId)
-      .then((rows) => {
-        if (active) setMonitors(rows);
+    Promise.all([
+      api.listMonitors(ccOrgId),
+      // Snapshots are best-effort: if the endpoint 404s (older backend) or
+      // fails for any other reason, we degrade to WS-only hydration.
+      api.listSnapshots(ccOrgId).catch((err) => {
+        console.warn("listSnapshots failed; falling back to WS hydration", err);
+        return [];
+      }),
+    ])
+      .then(([rows, snaps]) => {
+        if (!active) return;
+        setMonitors(rows);
+        if (snaps.length > 0) {
+          const seeded: Record<string, MetricSnapshot> = {};
+          for (const s of snaps) {
+            seeded[s.monitor_id] = {
+              cpu: s.cpu,
+              mem: s.mem,
+              disk: s.disk,
+              net_in: s.net_in,
+              net_out: s.net_out,
+              ts: s.ts,
+            };
+          }
+          setMetrics(seeded);
+        }
       })
       .catch((err: unknown) => {
         if (!active) return;
@@ -56,7 +79,9 @@ export default function OrgDashboard() {
         setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (!active) return;
+        setLoading(false);
+        setHydrated(true);
       });
     return () => {
       active = false;
@@ -83,6 +108,9 @@ export default function OrgDashboard() {
         [frame.monitor_id]: {
           cpu: frame.cpu,
           mem: frame.mem,
+          disk: frame.disk,
+          net_in: frame.net_in,
+          net_out: frame.net_out,
           ts: frame.ts,
         },
       }));
@@ -153,7 +181,12 @@ export default function OrgDashboard() {
                 </h2>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {list.map((m) => (
-                    <MonitorCard key={m.id} monitor={m} metrics={metrics[m.id]} />
+                    <MonitorCard
+                      key={m.id}
+                      monitor={m}
+                      metrics={metrics[m.id]}
+                      hydrated={hydrated}
+                    />
                   ))}
                 </div>
               </section>

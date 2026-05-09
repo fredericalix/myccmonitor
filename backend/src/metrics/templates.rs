@@ -1,17 +1,44 @@
-//! WarpScript templates for the Phase 4 poller. Lifted from mycctown.
+//! WarpScript templates for the Phase 4 poller. Lifted from mycctown and
+//! extended in Phase 11e to fetch disk + network alongside cpu + mem.
+//!
+//! Network metrics (`net.bytes_recv` / `net.bytes_sent`) are cumulative
+//! counters. The order `FETCH → mapper.rate → MERGE` is non-negotiable:
+//! computing the rate per-instance BEFORE merging avoids the 100+ GB/s spikes
+//! that would otherwise be produced when an instance is replaced (counter
+//! reset). After mapper.rate, negative values can still appear briefly; the
+//! parser drops them (`split_metrics`).
 
-/// Build a WarpScript that fetches the raw points for CPU user% and memory used%
-/// for each id, tagged by `label_name` (`"app_id"` for cc_application,
-/// `"addon_id"` for cc_addon). Output is interleaved class-by-class arrays
-/// that `split_cpu_ram` walks.
-pub fn cpu_ram_last_script(token: &str, label_name: &str, ids: &[String]) -> String {
+/// Sample at one point in time per (id, metric class). Field order matches
+/// `MetricSample`: cpu, mem, disk, net_in, net_out — all `Option<f32>`.
+pub type MetricsTuple = (
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+);
+
+/// Build a WarpScript that fetches the most recent point of cpu, mem, disk,
+/// net_in and net_out for each id, tagged by `label_name`. CC's Warp10 stores
+/// metrics for both apps and addons under the `app_id` label (with the addon's
+/// `realId` as value), so callers should pass `"app_id"` regardless of kind.
+pub fn metrics_last_script(token: &str, label_name: &str, ids: &[String]) -> String {
     let mut script = String::new();
     for id in ids {
         script.push_str(&format!(
+            // CPU + MEM + DISK: instantaneous gauges. FETCH then MERGE.
             "[ '{token}' 'cpu.usage_user' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
              MERGE 'cpu.usage_user' RENAME\n\
              [ '{token}' 'mem.used_percent' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
-             MERGE 'mem.used_percent' RENAME\n",
+             MERGE 'mem.used_percent' RENAME\n\
+             [ '{token}' 'disk.used_percent' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
+             MERGE 'disk.used_percent' RENAME\n\
+             [ '{token}' 'net.bytes_recv' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
+             [ SWAP mapper.rate 1 0 0 ] MAP\n\
+             MERGE 'net.bytes_recv' RENAME\n\
+             [ '{token}' 'net.bytes_sent' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
+             [ SWAP mapper.rate 1 0 0 ] MAP\n\
+             MERGE 'net.bytes_sent' RENAME\n",
             token = token,
             label = label_name,
             id = id
@@ -20,20 +47,20 @@ pub fn cpu_ram_last_script(token: &str, label_name: &str, ids: &[String]) -> Str
     script
 }
 
-/// Split a CPU+RAM GTS response into `{ id -> (cpu?, ram?) }`. The id is read
-/// from the `label_name` label of each GTS object. Walks the nested array tree
-/// and picks the last numeric point per (id, metric class).
-pub fn split_cpu_ram(
+/// Walk the GTS response tree and pick the last numeric point per
+/// (id, metric class). Negative values on `net.*` (counter reset artefacts
+/// even after `mapper.rate`) are dropped.
+pub fn split_metrics(
     value: &serde_json::Value,
     label_name: &str,
-) -> std::collections::HashMap<String, (Option<f32>, Option<f32>)> {
+) -> std::collections::HashMap<String, MetricsTuple> {
     use std::collections::HashMap;
-    let mut out: HashMap<String, (Option<f32>, Option<f32>)> = HashMap::new();
+    let mut out: HashMap<String, MetricsTuple> = HashMap::new();
 
     fn visit_gts(
         gts: &serde_json::Value,
         label_name: &str,
-        out: &mut HashMap<String, (Option<f32>, Option<f32>)>,
+        out: &mut HashMap<String, MetricsTuple>,
     ) {
         let class = gts.get("c").and_then(|v| v.as_str()).unwrap_or("");
         let id = match gts
@@ -57,20 +84,32 @@ pub fn split_cpu_ram(
             _ => return,
         };
 
-        let entry = out.entry(id).or_insert((None, None));
+        let entry = out.entry(id).or_insert((None, None, None, None, None));
+        // Field order: 0=cpu, 1=mem, 2=disk, 3=net_in, 4=net_out.
         if class.starts_with("cpu.") {
             let prev = entry.0.unwrap_or(f32::MIN);
             entry.0 = Some(prev.max(v as f32));
         } else if class.starts_with("mem.") {
             let prev = entry.1.unwrap_or(f32::MIN);
             entry.1 = Some(prev.max(v as f32));
+        } else if class.starts_with("disk.") {
+            let prev = entry.2.unwrap_or(f32::MIN);
+            entry.2 = Some(prev.max(v as f32));
+        } else if class == "net.bytes_recv" {
+            if v >= 0.0 {
+                let prev = entry.3.unwrap_or(f32::MIN);
+                entry.3 = Some(prev.max(v as f32));
+            }
+        } else if class == "net.bytes_sent" && v >= 0.0 {
+            let prev = entry.4.unwrap_or(f32::MIN);
+            entry.4 = Some(prev.max(v as f32));
         }
     }
 
     fn walk(
         v: &serde_json::Value,
         label_name: &str,
-        out: &mut HashMap<String, (Option<f32>, Option<f32>)>,
+        out: &mut HashMap<String, MetricsTuple>,
     ) {
         match v {
             serde_json::Value::Array(arr) => {

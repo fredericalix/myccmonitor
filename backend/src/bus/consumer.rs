@@ -164,6 +164,11 @@ async fn process_one(state: &AppState, payload: &[u8]) -> Result<()> {
                     cc_org_id: Some(&bus_msg.cc_org_id),
                     kind,
                     cc_resource_id: Some(&routing.resource_id),
+                    // Webhooks for ADDON_CREATION carry only `addon_xxx` in the
+                    // payload; the real_id needed for Warp10 is fetched on the
+                    // next sync_org call and self-heals via the always-overwrite
+                    // ON CONFLICT clause in upsert_cc.
+                    cc_metrics_id: Some(&routing.resource_id),
                     display_name: &routing.resource_id,
                     metadata: None,
                     // Webhook owns the steady-state via apply_state_change below;

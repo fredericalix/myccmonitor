@@ -24,6 +24,7 @@ export interface Monitor {
   cc_org_id: string | null;
   kind: "cc_application" | "cc_addon" | "synthetic";
   cc_resource_id: string | null;
+  cc_metrics_id: string | null;
   display_name: string;
   enabled: boolean;
   poll_interval_seconds: number;
@@ -67,12 +68,25 @@ export type WsFrame =
       ts: string;
       cpu: number | null;
       mem: number | null;
+      disk: number | null;
+      net_in: number | null;
+      net_out: number | null;
     };
 
 export interface MetricSnapshot {
   cpu: number | null;
   mem: number | null;
+  disk: number | null;
+  net_in: number | null;
+  net_out: number | null;
   ts: string;
+}
+
+/// Server response shape for GET /api/orgs/:cc_org_id/snapshots — same as
+/// MetricSnapshot but carries `monitor_id` (the WS frame strips it because
+/// the receiver maps frames into a snapshot keyed by monitor_id).
+export interface MetricSnapshotApi extends MetricSnapshot {
+  monitor_id: string;
 }
 
 export interface AutoRules {

@@ -3,6 +3,7 @@
 
 use crate::api::{CcClient, SUBSCRIBED_EVENTS};
 use crate::auth::AuthenticatedUser;
+use crate::db::metric_samples::{self, MetricSample};
 use crate::db::monitors::Monitor;
 use crate::db::orgs::{self, Org, OrgInput};
 use crate::db::webhook_configs::{self, WebhookConfig};
@@ -23,6 +24,21 @@ pub fn router() -> Router<AppState> {
         .route("/api/orgs", get(list_orgs))
         .route("/api/orgs/{cc_org_id}/webhook", post(setup_webhook))
         .route("/api/orgs/{cc_org_id}/monitors", get(list_monitors))
+        .route("/api/orgs/{cc_org_id}/snapshots", get(list_snapshots))
+}
+
+async fn list_snapshots(
+    State(state): State<AppState>,
+    auth: AuthenticatedUser,
+    Path(cc_org_id): Path<String>,
+) -> Result<Json<Vec<MetricSample>>, AppError> {
+    // Multi-tenant: verify org ownership before reading; the SQL JOIN below
+    // filters by user_id too as defense in depth.
+    let _org = orgs::find_by_user_and_cc_id(&state.pool, auth.id, &cc_org_id)
+        .await?
+        .ok_or(AppError::Forbidden)?;
+    let rows = metric_samples::latest_for_org(&state.pool, auth.id, &cc_org_id).await?;
+    Ok(Json(rows))
 }
 
 async fn list_monitors(

@@ -61,6 +61,7 @@ async fn poll_once(state: &AppState) -> anyhow::Result<()> {
           AND kind <> 'synthetic'
           AND cc_org_id IS NOT NULL
           AND cc_resource_id IS NOT NULL
+          AND cc_metrics_id IS NOT NULL
           AND (
               last_poll_at IS NULL
               OR last_poll_at < now() - (poll_interval_seconds * INTERVAL '1 second')
@@ -111,9 +112,10 @@ async fn poll_user_org(
     let (access_token, access_secret) = decrypt_user_oauth(&user, &cfg.encryption_key)?;
     let cc = CcClient::new(http, cfg, &access_token, &access_secret);
 
-    let (apps, addons): (Vec<_>, Vec<_>) = monitors
-        .into_iter()
-        .partition(|m| m.kind == "cc_application");
+    let apps: Vec<&Monitor> = monitors
+        .iter()
+        .filter(|m| m.kind == "cc_application")
+        .collect();
 
     // Refresh app state from CC's own view. Cheap (one list_applications call
     // per (user, org) per tick) and bulletproof against missed webhooks.
@@ -121,11 +123,11 @@ async fn poll_user_org(
         refresh_app_state(state, user_id, &cc, cc_org_id, &apps).await;
     }
 
-    if !apps.is_empty() {
-        run_kind(state, &cc, user_id, cc_org_id, "app_id", &apps).await;
-    }
-    if !addons.is_empty() {
-        run_kind(state, &cc, user_id, cc_org_id, "addon_id", &addons).await;
+    // Single Warp10 batch for apps + addons. CC's Warp10 indexes both kinds
+    // under the `app_id` label; for addons the value is `cc_metrics_id`
+    // (== addon's realId).
+    if !monitors.is_empty() {
+        run_metrics_batch(state, &cc, user_id, cc_org_id, &monitors).await;
     }
     Ok(())
 }
@@ -139,7 +141,7 @@ async fn refresh_app_state(
     user_id: Uuid,
     cc: &CcClient<'_>,
     cc_org_id: &str,
-    apps: &[Monitor],
+    apps: &[&Monitor],
 ) {
     let pool = &state.pool;
     let cc_apps = match cc.list_applications(cc_org_id).await {
@@ -155,7 +157,7 @@ async fn refresh_app_state(
         .collect();
 
     let now = Utc::now();
-    for monitor in apps {
+    for monitor in apps.iter().copied() {
         let Some(rid) = monitor.cc_resource_id.as_deref() else {
             continue;
         };
@@ -252,12 +254,11 @@ async fn refresh_app_state(
     }
 }
 
-async fn run_kind(
+async fn run_metrics_batch(
     state: &AppState,
     cc: &CcClient<'_>,
     user_id: Uuid,
     cc_org_id: &str,
-    label_name: &str,
     monitors: &[Monitor],
 ) {
     let pool = &state.pool;
@@ -267,16 +268,18 @@ async fn run_kind(
 
     let ids: Vec<String> = monitors
         .iter()
-        .filter_map(|m| m.cc_resource_id.clone())
+        .filter_map(|m| m.cc_metrics_id.clone())
         .collect();
-    let map = match metrics::fetch_cpu_mem(
-        cfg, http, cc, token_cache, user_id, cc_org_id, label_name, &ids,
+    // Hard-coded `app_id` label — CC's Warp10 keys both apps and addons under
+    // it; addons just use their realId instead of their addon_id.
+    let map = match metrics::fetch_metrics(
+        cfg, http, cc, token_cache, user_id, cc_org_id, "app_id", &ids,
     )
     .await
     {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(error = ?e, %label_name, %cc_org_id, "fetch_cpu_mem failed");
+            tracing::warn!(error = ?e, %cc_org_id, "fetch_metrics failed");
             // Still bump last_poll_at so we don't hammer a broken upstream.
             for m in monitors {
                 let _ = bump_last_poll(pool, m.id).await;
@@ -287,11 +290,15 @@ async fn run_kind(
 
     let now = Utc::now();
     for monitor in monitors {
-        let Some(rid) = monitor.cc_resource_id.as_deref() else {
+        let Some(mid) = monitor.cc_metrics_id.as_deref() else {
             continue;
         };
-        let (cpu, mem) = map.get(rid).copied().unwrap_or((None, None));
-        write_sample(state, user_id, monitor, cpu, mem, cc_org_id, now).await;
+        let (cpu, mem, disk, net_in, net_out) =
+            map.get(mid).copied().unwrap_or((None, None, None, None, None));
+        write_sample(
+            state, user_id, monitor, cpu, mem, disk, net_in, net_out, cc_org_id, now,
+        )
+        .await;
     }
 }
 
@@ -302,6 +309,9 @@ async fn write_sample(
     monitor: &Monitor,
     cpu: Option<f32>,
     mem: Option<f32>,
+    disk: Option<f32>,
+    net_in: Option<f32>,
+    net_out: Option<f32>,
     cc_org_id: &str,
     ts: DateTime<Utc>,
 ) {
@@ -337,14 +347,23 @@ async fn write_sample(
 
     let cpu_d = cpu.map(|v| v as f64);
     let mem_d = mem.map(|v| v as f64);
+    let disk_d = disk.map(|v| v as f64);
+    let net_in_d = net_in.map(|v| v as f64);
+    let net_out_d = net_out.map(|v| v as f64);
+    let any_metric =
+        cpu_d.is_some() || mem_d.is_some() || disk_d.is_some() || net_in_d.is_some() || net_out_d.is_some();
 
-    if let Err(e) = db::metric_samples::insert(pool, monitor.id, ts, cpu_d, mem_d).await {
+    if let Err(e) = db::metric_samples::insert(
+        pool, monitor.id, ts, cpu_d, mem_d, disk_d, net_in_d, net_out_d,
+    )
+    .await
+    {
         tracing::warn!(error = ?e, monitor_id = %monitor.id, "insert metric_sample failed");
     }
     if let Err(e) = bump_last_poll(pool, monitor.id).await {
         tracing::warn!(error = ?e, monitor_id = %monitor.id, "bump last_poll_at failed");
     }
-    if cpu_d.is_some() || mem_d.is_some() {
+    if any_metric {
         if let Err(e) = ws::broadcast_via_pg(
             pool,
             cc_org_id,
@@ -353,6 +372,9 @@ async fn write_sample(
                 ts,
                 cpu: cpu_d,
                 mem: mem_d,
+                disk: disk_d,
+                net_in: net_in_d,
+                net_out: net_out_d,
             },
         )
         .await
@@ -367,7 +389,7 @@ async fn write_sample(
 
     // Fire dependent rules so threshold conditions on cpu/mem are evaluated
     // every poll cycle. Best-effort outside the lock.
-    if cpu_d.is_some() || mem_d.is_some() {
+    if any_metric {
         if let Err(e) = trigger_for_monitor(
             state,
             user_id,

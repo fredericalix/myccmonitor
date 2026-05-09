@@ -3,6 +3,7 @@ import type {
   DryRunResult,
   GroupView,
   Me,
+  MetricSnapshotApi,
   Monitor,
   NotificationChannel,
   Org,
@@ -59,6 +60,10 @@ export const api = {
     ),
   listMonitors: (ccOrgId: string) =>
     request<Monitor[]>(`/api/orgs/${encodeURIComponent(ccOrgId)}/monitors`),
+  listSnapshots: (ccOrgId: string) =>
+    request<MetricSnapshotApi[]>(
+      `/api/orgs/${encodeURIComponent(ccOrgId)}/snapshots`,
+    ),
   logout: () => request<void>("/auth/logout", { method: "POST", body: "{}" }),
 
   listGroups: () => request<GroupView[]>("/api/groups"),

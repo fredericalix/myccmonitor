@@ -37,6 +37,9 @@ pub enum WsFrame {
         ts: DateTime<Utc>,
         cpu: Option<f64>,
         mem: Option<f64>,
+        disk: Option<f64>,
+        net_in: Option<f64>,
+        net_out: Option<f64>,
     },
     RuleFiring {
         rule_id: Uuid,

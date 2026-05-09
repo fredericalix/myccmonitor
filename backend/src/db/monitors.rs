@@ -10,6 +10,10 @@ pub struct Monitor {
     pub cc_org_id: Option<String>,
     pub kind: String,
     pub cc_resource_id: Option<String>,
+    /// Warp10 lookup key. For apps == `cc_resource_id`. For addons == addon's
+    /// `realId` (e.g. `postgresql_xxx`), since CC's Warp10 indexes both kinds
+    /// under the `app_id` label but addons use realId, not id.
+    pub cc_metrics_id: Option<String>,
     pub display_name: String,
     pub enabled: bool,
     pub poll_interval_seconds: i32,
@@ -27,6 +31,7 @@ pub struct MonitorInput<'a> {
     pub cc_org_id: Option<&'a str>,
     pub kind: &'a str,
     pub cc_resource_id: Option<&'a str>,
+    pub cc_metrics_id: Option<&'a str>,
     pub display_name: &'a str,
     pub metadata: Option<serde_json::Value>,
     /// CC's view of the resource's state (`"ok"` / `"critical"` / `"unknown"`).
@@ -46,13 +51,14 @@ pub async fn upsert_cc(
     sqlx::query_as::<_, Monitor>(
         r#"
         INSERT INTO monitors
-            (user_id, cc_org_id, kind, cc_resource_id, display_name, metadata,
+            (user_id, cc_org_id, kind, cc_resource_id, cc_metrics_id, display_name, metadata,
              current_state, current_state_since)
-        VALUES ($1, $2, $3, $4, $5, $6, $7,
-                CASE WHEN $7 <> 'unknown' THEN now() ELSE NULL END)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                CASE WHEN $8 <> 'unknown' THEN now() ELSE NULL END)
         ON CONFLICT (user_id, cc_org_id, kind, cc_resource_id)
         WHERE cc_resource_id IS NOT NULL
         DO UPDATE SET
+            cc_metrics_id = EXCLUDED.cc_metrics_id,
             display_name = EXCLUDED.display_name,
             metadata = EXCLUDED.metadata,
             current_state = CASE
@@ -73,6 +79,7 @@ pub async fn upsert_cc(
     .bind(input.cc_org_id)
     .bind(input.kind)
     .bind(input.cc_resource_id)
+    .bind(input.cc_metrics_id)
     .bind(input.display_name)
     .bind(input.metadata)
     .bind(input.initial_state)

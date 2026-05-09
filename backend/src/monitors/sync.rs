@@ -42,6 +42,7 @@ pub async fn sync_org(
                 cc_org_id: Some(cc_org_id),
                 kind: "cc_application",
                 cc_resource_id: Some(&app.id),
+                cc_metrics_id: Some(&app.id),
                 display_name: &app.name,
                 metadata: Some(metadata),
                 initial_state,
@@ -62,6 +63,7 @@ pub async fn sync_org(
             "region": addon.region,
             "real_id": addon.real_id,
         });
+        let metrics_id = addon.real_id.as_deref().unwrap_or(&addon.id);
         let monitor = monitors::upsert_cc(
             pool,
             user_id,
@@ -69,6 +71,7 @@ pub async fn sync_org(
                 cc_org_id: Some(cc_org_id),
                 kind: "cc_addon",
                 cc_resource_id: Some(&addon.id),
+                cc_metrics_id: Some(metrics_id),
                 display_name: &addon.name,
                 metadata: Some(metadata),
                 initial_state: "ok",

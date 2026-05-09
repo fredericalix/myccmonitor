@@ -1,5 +1,7 @@
 import { cn } from "@/lib/cn";
 
+export type MetricBarState = "loading" | "no-data" | "data";
+
 function gradient(value: number): string {
   if (value >= 90) return "from-critical/80 to-critical";
   if (value >= 75) return "from-warning/80 to-warning";
@@ -9,11 +11,29 @@ function gradient(value: number): string {
 export function MetricBar({
   label,
   value,
+  state = "data",
 }: {
   label: string;
   value: number | null;
+  state?: MetricBarState;
 }) {
-  if (value === null || value === undefined || Number.isNaN(value)) {
+  const effectiveState: MetricBarState =
+    value === null || value === undefined || Number.isNaN(value)
+      ? state === "loading"
+        ? "loading"
+        : "no-data"
+      : "data";
+
+  if (effectiveState === "loading") {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-text-subtle">
+        <span className="w-9 font-mono uppercase tracking-wider">{label}</span>
+        <div className="h-2 flex-1 overflow-hidden rounded-full ring-1 ring-inset ring-border/60 animate-warm-shimmer" />
+        <span className="w-10 text-right font-mono opacity-60">…</span>
+      </div>
+    );
+  }
+  if (effectiveState === "no-data") {
     return (
       <div className="flex items-center gap-2 text-[11px] text-text-subtle">
         <span className="w-9 font-mono uppercase tracking-wider">{label}</span>
@@ -22,7 +42,7 @@ export function MetricBar({
       </div>
     );
   }
-  const pct = Math.max(0, Math.min(100, value));
+  const pct = Math.max(0, Math.min(100, value as number));
   return (
     <div
       className="flex items-center gap-2 group"
