@@ -155,7 +155,7 @@ The Next dev server proxies `/auth/*`, `/api/*`, `/ws`, and `/webhooks/*` to `BA
 
    Tokio MonitorPoller (every 60s, on every instance, advisory-locked per monitor)
         │
-        ├─► query Warp10 → write metric_samples → trigger dependent rules (Trigger::Poll)
+        ├─► query Warp10 → write metric_readings (one row per metric, prune to last 10) → trigger dependent rules (Trigger::Poll)
         └─► query CC list_applications → on diff: set_state_if_changed → trigger dependent rules
 ```
 
@@ -163,7 +163,7 @@ The five lanes:
 
 1. **Webhook ingestion.** Frontend rewrites `/webhooks/cc/{token}` to backend. The handler authenticates by token, wraps the body in a `BusMessage`, and produces it on the Pulsar topic `cc-webhooks` with `partition_key = cc_org_id`. Returns `204` in under 100 ms.
 2. **Webhook consumer** (`backend/src/bus/consumer.rs`). Shared subscription so every backend instance load-balances. Parses, dedups via `webhook_dedup` (60 s window, cross-instance), maps the event to an `EventEffect` (Upsert / SetState / Delete), and on a real state transition calls `apply_state_change`, which writes history + broadcasts WS frame + invokes `rules::exec::trigger_for_monitor(state, user_id, monitor_id, Trigger::Webhook)`.
-3. **Monitor poller** (`backend/src/monitors/poller.rs`). Runs in a Tokio interval task every 60 s on every backend instance. Per due monitor, takes a `pg_try_advisory_xact_lock(hash(id))` inside a transaction; only the lock-winner does the work. Two paths: `refresh_app_state` reads CC's `state` field and reconciles, `write_sample` writes a `metric_samples` row and broadcasts a `MetricsSnapshot` frame. Both call `trigger_for_monitor(state, user_id, monitor_id, Trigger::Poll)` so threshold conditions on cpu/mem evaluate every tick.
+3. **Monitor poller** (`backend/src/monitors/poller.rs`). Runs in a Tokio interval task every 60 s on every backend instance. Per due monitor, takes a `pg_try_advisory_xact_lock(hash(id))` inside a transaction; only the lock-winner does the work. Two paths: `refresh_app_state` reads CC's `state` field and reconciles, `write_sample` fetches metrics from Warp10 (chunked at `WARP10_BATCH_SIZE = 3` ids per script with `mapper.rate` per-instance for net counters), writes one row per non-null metric to `metric_readings` (auto-pruning to `KEEP_N_PER_METRIC = 10` rows per `(monitor, metric)` on each insert), reads back `latest_per_metric` to assemble the WS frame, and broadcasts a `MetricsSnapshot`. The frame carries the **last known value per metric** independently — disk's slow ~5 min cadence doesn't make the bar flicker between values and `n/a`. Both paths call `trigger_for_monitor(state, user_id, monitor_id, Trigger::Poll)`; the poll trigger is gated on `fresh_metric` (= this poll produced new data) so threshold rules don't fire repeatedly on stale carried-forward values.
 4. **Rule evaluator** (`backend/src/rules/`). See §9 below.
 5. **WebSocket fan-out** (`backend/src/ws/`). One dedicated Postgres connection per instance runs `LISTEN ws_broadcast`. Producers (consumer, poller, rule actions) call `pg_notify('ws_broadcast', json)` instead of pushing to local `org_buses` directly — that way every instance sees every frame. The handler at `GET /ws?org=cc_org_id` upgrades and subscribes to its instance's `org_bus`.
 
@@ -177,9 +177,10 @@ The five lanes:
 | `orgs` | cached `(user_id, cc_org_id, name, avatar_url)` from `/v2/organisations` |
 | `webhook_configs` | active myccmonitor webhooks per `(user_id, cc_org_id)`; `token` is 32 random bytes b64url |
 | `webhook_dedup` | `(key, expires_at)`; cross-instance dedup, 60 s window, periodically purged |
-| `monitors` | one row per cc_application / cc_addon / synthetic monitor; carries `current_state`, `last_poll_at`, `acknowledged`, `metadata` |
+| `monitors` | one row per cc_application / cc_addon / synthetic monitor; carries `current_state`, `last_poll_at`, `acknowledged`, `metadata`, `cc_resource_id` (CC API id) and `cc_metrics_id` (Warp10 lookup key — `realId` for addons, `cc_resource_id` for apps) |
 | `monitor_state_history` | append-only state changes; backs the `for X` time-based condition |
-| `metric_samples` | `(monitor_id, ts) → cpu/mem/…` ; sliding 24-hour retention |
+| `metric_readings` | `(monitor_id, metric_name, ts) → value`; pruned to `KEEP_N_PER_METRIC = 10` rows per (monitor, metric) on every insert. One row per Warp10 reading, no NULL placeholders. CC's per-metric cadence differences (`disk.used_percent` ~5 min vs `cpu.usage_user` ~1 min) are handled natively |
+| `metric_samples` | **legacy** — wide-row table from Phase 4 / 11e; no longer written since Phase 11f. Kept around as a backfill source / rollback safety; will be dropped in a future migration |
 | `monitor_groups` | user groups with optional `auto_rules` JSONB |
 | `monitor_group_members` | manual membership; effective members = manual ∪ auto-matched at read time |
 | `rules` | one row per workflow rule; `condition` + `actions` are JSONB |
@@ -414,9 +415,13 @@ Each deploy pushes the current `main` HEAD to the matching CC remote (`backend` 
 - `CC_RUN_COMMAND="cd frontend && npm run build && npm start"` is required because the CC Node runtime doesn't run `npm run build` on its own.
 - `<name>.cleverapps.io` shortcut requires `clever domain add` after the first deploy.
 
-## 14. Diagnostic endpoint & observability
+## 14. Diagnostic endpoints & observability
 
-`GET /api/rules/:id/debug` is a pure-read endpoint that returns a snapshot of the rule's current evaluation state. Powers the Debug button on `/rules/[id]` (see [USER_GUIDE.md "Debug"](./USER_GUIDE.md#debug)).
+Two read-only debug endpoints help answer "why isn't this working?" questions without leaving the dashboard.
+
+### Rule debug — `GET /api/rules/:id/debug`
+
+A snapshot of the rule's current evaluation state. Powers the Debug button on `/rules/[id]` (see [USER_GUIDE.md "Debug"](./USER_GUIDE.md#debug)).
 
 Response shape:
 
@@ -440,6 +445,31 @@ struct RuleDebugResponse {
 ```
 
 Implementation in `backend/src/rules/debug.rs` reuses `evaluator::evaluate`, `dependencies::extract`, `field::parse/fetch`, `groups::compute_view`, and `rule_firings::list_recent_for_rule`.
+
+### Monitor debug — `GET /api/orgs/:cc_org_id/monitors/:monitor_id/debug`
+
+Answers "**why is disk/net empty for this app?**" definitively, in pure SQL (<50 ms response). Multi-tenant guarded: org ownership + monitor.user_id + cc_org_id match all enforced.
+
+Response shape:
+
+```rust
+struct MonitorDebugResponse {
+    monitor: Monitor,
+    cc_metrics_id: Option<String>,           // Warp10 lookup key
+    samples_count_30m: i64,                  // total readings in the last 30 min
+    window: &'static str,                    // "30m"
+    available_metrics: Vec<&'static str>,    // metrics with ≥1 reading in the window
+    missing_metrics: Vec<&'static str>,      // expected ∖ available
+    expected_metrics: &'static [&'static str], // ["cpu","mem","disk","net_in","net_out"]
+    latest_sample: Option<MetricSnapshotApi>, // assembled from latest_per_metric
+    last_poll_at: Option<DateTime<Utc>>,
+    note: Option<&'static str>,              // "no samples yet" / "synthetic monitor"
+}
+```
+
+Implementation in `backend/src/handlers/api.rs::monitor_debug` reuses `monitors::find_by_id_for_user`, `metric_readings::availability` and `metric_readings::latest_per_metric`. The frontend's `MonitorDebugDialog` (Bug button on `MonitorCard`) renders chips for each expected metric (green = present, red = missing) plus the latest_sample row — see [USER_GUIDE.md "Monitor diagnostic"](./USER_GUIDE.md#monitor-diagnostic).
+
+**Earlier iterations tried Warp10 `FIND` for live class enumeration** (FIND is the WarpScript op for "list GTS metadata matching this regex"). Three failed attempts: wrong signature → 500, wide regex → minutes-long hang + 500 from upstream proxy, narrow regex → still 500 after 10 s. Conclusion: FIND on CC's Warp10 isn't reliable enough for a user-facing endpoint. Pivoted to reading `metric_readings` itself, which is the authoritative answer — if the poller didn't capture the metric in 30 min, CC isn't emitting it for this app's runtime. No Warp10 round-trip in the debug path.
 
 **INFO-level tracing** is in place on the rule eval hot path:
 

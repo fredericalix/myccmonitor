@@ -88,7 +88,7 @@ OAuth callback in dev: `PUBLIC_BASE_URL=http://localhost:3000`. The Next.js dev 
 
    Tokio MonitorPoller (every 60s, on every instance, advisory-locked per monitor)
         │
-        └─► query Warp10 → write metric_samples → trigger dependent rules
+        └─► query Warp10 → write metric_readings (per metric) → trigger dependent rules
 ```
 
 ## 5. Repo layout
@@ -109,7 +109,7 @@ myccmonitor/
 │       ├── api/                 ← cc_client.rs (lifted from mycctown)
 │       ├── db/                  ← users, monitors, alerts, webhook_configs, channels, dedup, rules, rule_versions, rule_dependencies, rule_firings, monitor_state_history, monitor_groups
 │       ├── handlers/            ← /auth, /api, /webhooks/cc/:token, /ws
-│       ├── monitors/            ← MonitorPoller, advisory locks, metric_samples + state_history writes
+│       ├── monitors/            ← MonitorPoller, advisory locks, metric_readings + state_history writes
 │       ├── groups/              ← monitor_groups CRUD, auto-grouping rules, state rollup
 │       ├── rules/               ← workflow engine: Condition tree, Action exec, RuleEvaluator, dependency index, cooldown, versioning, cycle detection
 │       ├── notifications/       ← NotificationAdapter trait + email/slack/discord/webhook + handlebars rendering
@@ -183,7 +183,8 @@ monitors (
   user_id UUID REFERENCES users,
   cc_org_id TEXT,                            -- nullable for synthetic
   kind TEXT NOT NULL,                        -- 'cc_application' | 'cc_addon' | 'synthetic'
-  cc_resource_id TEXT,                       -- app_xxx | addon_xxx ; null for synthetic
+  cc_resource_id TEXT,                       -- app_xxx | addon_xxx ; null for synthetic. The id used for CC API calls (webhooks, deletion).
+  cc_metrics_id TEXT,                        -- Warp10 lookup key. == cc_resource_id for apps, == addon.real_id for addons (e.g. postgresql_xxx). CC indexes both kinds under the `app_id` label, with realId as value for addons.
   display_name TEXT NOT NULL,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   poll_interval_seconds INT DEFAULT 60,      -- ignored if kind='synthetic'
@@ -204,13 +205,26 @@ monitor_state_history (                      -- needed for `for Xm` conditions
   PRIMARY KEY (monitor_id, changed_at)
 );                                           -- retention 30d
 
-metric_samples (                             -- sliding window for metric `for Xm` conditions
+metric_readings (                            -- per-metric storage (Phase 11f). Each Warp10 reading is its own row keyed by (monitor_id, metric_name, ts). Bounded growth: poller prunes to KEEP_N_PER_METRIC=10 rows per (monitor, metric) on every insert. CC's Warp10 emits classes at different cadences (`disk.used_percent` ~5min vs `cpu.usage_user` ~1min); per-metric rows handle that natively, no NULL placeholders.
+  monitor_id UUID NOT NULL REFERENCES monitors ON DELETE CASCADE,
+  metric_name TEXT NOT NULL,                 -- 'cpu' | 'mem' | 'disk' | 'net_in' | 'net_out'  (CHECK constraint)
+  ts TIMESTAMPTZ NOT NULL,
+  value DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY (monitor_id, metric_name, ts)
+);
+-- Index: (monitor_id, metric_name, ts DESC) for fast latest lookups.
+
+-- Legacy table; no longer written, retained for historical reference and as
+-- a backfill source for future migrations. Schema kept identical so a
+-- rollback is possible. Will be dropped in a future migration once the new
+-- path is confirmed stable.
+metric_samples (
   monitor_id UUID NOT NULL REFERENCES monitors ON DELETE CASCADE,
   ts TIMESTAMPTZ NOT NULL,
   cpu DOUBLE PRECISION, mem DOUBLE PRECISION, disk DOUBLE PRECISION,
   net_in DOUBLE PRECISION, net_out DOUBLE PRECISION,
   PRIMARY KEY (monitor_id, ts)
-);                                           -- retention 24h
+);
 
 monitor_groups (
   id UUID PK,
@@ -372,7 +386,7 @@ enum Condition {
 
 | Prefix | Properties | Source |
 | --- | --- | --- |
-| `monitor:{uuid}` | `state`, `message`, `acknowledged`, `cpu`, `mem`, `disk`, `net_in`, `net_out`, `last_deploy_status` | Monitor row + latest `metric_samples` row |
+| `monitor:{uuid}` | `state`, `message`, `acknowledged`, `cpu`, `mem`, `disk`, `net_in`, `net_out`, `last_deploy_status` | Monitor row + latest `metric_readings` row per metric (looked up by metric_name) |
 | `group:{uuid}` | `state` (rolled-up), `critical_count`, `warning_count`, `total_count` | Computed from members on demand |
 
 **Time-based:** `monitor:X:state == critical for 5m` is true iff the most recent `monitor_state_history` row showing `state=critical` for X is at least 5 min old AND no transition to a different state has happened since. One SQL query per condition.
@@ -540,7 +554,7 @@ Backend runs ≥ 2 instances in prod. Multi-instance coordination strategy:
 2. for each candidate:
    a. lock = pg_try_advisory_xact_lock(hashtext('monitor:' || id))   -- non-blocking, txn-scoped
    b. if not acquired: skip (another instance owns it)
-   c. fetch Warp10 metrics → INSERT metric_samples → trigger dependent rules
+   c. fetch Warp10 metrics → for each non-null metric, INSERT metric_readings + prune to last 10 → read latest_per_metric for WS broadcast → trigger dependent rules
    d. if state transition: INSERT monitor_state_history, UPDATE monitors, pg_notify
    e. UPDATE monitors.last_poll_at
    f. (lock auto-released at txn end)
@@ -586,6 +600,8 @@ Connection-level locks are released on connection death, so a crashed poller doe
 - Rule never fires → check `rule_dependencies` was rebuilt at last save; check `rule_firings` for `cooldown_skipped` rows; use `POST /api/rules/:id/test` to dry-run against current state.
 - Same monitor polled twice → advisory lock not held; verify the poll body wraps in a transaction with `pg_advisory_xact_lock`.
 - Escalation never fires → check the `rule-escalations` consumer is running and topic subscription is active; verify Pulsar broker accepts `deliverAfter`.
+- Metric bar shows `n/a` for disk/net while cpu/mem are fine → CC's runtime doesn't emit those classes for that app. Click the Bug button on the MonitorCard → `GET /api/orgs/:id/monitors/:id/debug` returns the `missing_metrics` set, computed from `metric_readings` over the last 30 min. Not a backend bug — confirm with another app on the same org as a control.
+- All metric bars show `n/a` after `>50` minutes of no readings → `KEEP_N_PER_METRIC = 10` rows × ~5 min cadence = 50 min lookback. If a monitor genuinely stops getting readings (Warp10 token expired, app deleted, network split), the bar correctly returns to `n/a` once the last reading falls out of the window.
 
 ## 18. Conventions
 
@@ -617,6 +633,12 @@ Connection-level locks are released on connection death, so a crashed poller doe
 - **CC Node runtime doesn't run `npm run build`.** It does `npm install` then runs the start command, period. For Next.js (which needs `next build` to produce `.next/`), set `CC_RUN_COMMAND="cd $APP_FOLDER && npm run build && npm start"`. The `cd` is also needed because `APP_FOLDER` is honoured at build time but not at run time. A leaner alternative is to add a `build` step via `clevercloud/run.sh` or `package.json` `scripts.postinstall` — left as a future cleanup.
 - **Domains aren't auto-claimed.** Even though apps deploy at `https://app-<id>.cleverapps.io/`, the `<name>.cleverapps.io` shortcut requires `clever domain add <name>.cleverapps.io --alias <alias>`. Config that hard-codes the named URL (e.g. `PUBLIC_BASE_URL`, `BACKEND_INTERNAL_URL`) only works after the domain is claimed.
 - **OAuth consumer rights.** CC error 6201 ("You are not allowed to access this organisation's applications") on `GET /v2/organisations/{id}/applications` AND on `POST /v2/notifications/webhooks/{ownerId}` means the consumer is missing `manage-organisations-applications`. The minimal set for myccmonitor is `access-personal-information,access-organisations,manage-organisations-applications,manage-organisations-services`. CC's OAuth model has no `access-organisations-applications` — `manage-*` is the only granularity. After widening the consumer's rights, **existing user access tokens still carry the old grant**: users must hit `/auth/login` again to get a fresh token. Update with `clever oauth-consumers update <key> --rights "..."`.
+- **Addons use a different label value in Warp10.** CC indexes both apps and addons under the **same** `app_id` label, BUT for addons the value is the addon's `realId` (`postgresql_xxx`, `redis_xxx`), not its `id` (`addon_xxx`). The poller groups by `monitors.cc_metrics_id` (Phase 11e) which we set to `cc_resource_id` for apps and `addon.realId` for addons (with a fallback to `addon.id` if realId is unknown — auto-healed on the next `sync_org`). Querying with the wrong value silently returns 0 GTS — no error, just no data.
+- **WarpScript script size + Warp10 latency.** The poller chunks the per-monitor metric query into batches of `WARP10_BATCH_SIZE = 3` (Phase 11e). With 5 metrics per id × `mapper.rate` over 5 min for net counters, larger chunks (12+ ids) easily push CC's Warp10 over 60 s and the upstream proxy returns 500. Three is overcautious but reliable. Dropping further makes connection overhead dominate. Keep at 3 unless you measure.
+- **CC's runtimes don't all emit the same Warp10 classes.** Some apps (notably scaled Node.js / multi-instance setups) lack `disk.used_percent` or even network metrics, while cpu/mem are always present. Don't try to "fix" this in the poller — surface it via the Debug button (`GET /api/orgs/:org/monitors/:id/debug` returns `missing_metrics`) and let the bar render `n/a`. The metric is genuinely not in CC's Warp10 for that runtime.
+- **Per-metric cadence (Phase 11f).** `disk.used_percent` is emitted ~every 5 min while cpu/mem/net come every ~1 min. Don't store wide-row "snapshots" with NULL columns when one metric was missed — the bar will flicker between values and `n/a` every poll. The current design uses `metric_readings` (one row per measurement) and the WS frame reads `latest_per_metric` post-insert, so each metric carries its last known value independently.
+- **WarpScript FIND is fragile on CC.** `FIND` over a wide regex (`'~.*'`, `'~^(cpu|mem|disk|net)\..*'`) hangs for minutes on CC's Warp10 and the upstream proxy returns 500 before the response arrives. Don't rely on FIND in any user-visible code path. The per-monitor debug endpoint reads `metric_readings` directly (pure SQL <50 ms) instead.
+- **Carry-forward semantics.** The frame WS broadcasts the **latest known value per metric** — that's `latest_per_metric` post-insert. If the poll didn't receive disk this tick but received it 4 min ago (still in the 10-row window), the bar shows the 4-min-old value. Only when the last reading falls out of the bounded window does the bar return to `n/a`. This is intentional — for the dashboard, "last known reading" beats "no reading right now". Rules engine, however, gates `trigger_for_monitor` on `fresh_metric` (= this poll produced new data) so threshold rules don't fire repeatedly on stale carried-forward values.
 
 ## 19. Useful commands
 
@@ -645,6 +667,16 @@ psql $POSTGRESQL_ADDON_URI
 SELECT id, name, last_fired_at, cooldown_seconds FROM rules;
 SELECT * FROM rule_firings ORDER BY fired_at DESC LIMIT 20;
 SELECT pid, query FROM pg_stat_activity WHERE query LIKE '%LISTEN%';
+
+-- Metric readings: latest per (monitor, metric)
+SELECT DISTINCT ON (mr.monitor_id, mr.metric_name)
+  m.display_name, mr.metric_name, mr.value, mr.ts
+FROM metric_readings mr JOIN monitors m ON m.id = mr.monitor_id
+ORDER BY mr.monitor_id, mr.metric_name, mr.ts DESC;
+
+-- Per-metric cardinality check (should always be ≤ KEEP_N_PER_METRIC=10)
+SELECT monitor_id, metric_name, count(*)
+FROM metric_readings GROUP BY monitor_id, metric_name HAVING count(*) > 10;
 ```
 
 ## 20. Reuse from sibling projects under apple/
@@ -677,7 +709,8 @@ SELECT pid, query FROM pg_stat_activity WHERE query LIKE '%LISTEN%';
 - DSL-style text editor as an alternative front to the visual editor (`cpu > 80 for 5m AND env=prod` → graph).
 - More action types: `runWebhook` with custom payload, `setMonitorMetadata`, `acknowledgeAlert`.
 - Audit log of who edited each rule (track session `user_id` + IP at version save).
-- `metric_samples` retention tuning per monitor.
+- `metric_readings` retention tuning per monitor (currently `KEEP_N_PER_METRIC = 10`, hardcoded).
+- Drop the legacy `metric_samples` table once the new path is verified in long-running prod.
 
 ## 22. Implementation log
 
@@ -698,6 +731,8 @@ Each phase committed in turn. Source of truth is `git log`; this list is a quick
 - ✅ **Phase 10b** — post-deploy hardening. Two follow-up fixes prompted by user testing:
   - **Setup webhook idempotency** (commit `645cf54`). The first attempt at deduping (commit `68ec582`) relied on the stored `cc_webhook_id`, which was fragile if serde ever returned `None` and didn't help with orphans accumulated before the fix. New flow: every Setup webhook click `GET /v2/notifications/webhooks/{ownerId}`, deletes every entry whose URL starts with `${PUBLIC_BASE_URL}/webhooks/cc/`, then creates one fresh hook. `CcWebhook.id` tightened from `Option<String>` to `String` so deserialization fails loudly instead of silently storing NULL.
   - **Monitor state from CC, not just webhooks** (commit `<pending>`). Previously every monitor sat at `current_state='unknown'` until a webhook event fired; idle apps stayed unknown forever. Two paths now read CC's `state` field on `/v2/organisations/{id}/applications`: (1) `sync_org` seeds `current_state` on INSERT and self-heals on CONFLICT only when the prior row was still `unknown`, never clobbering a webhook-set value; (2) the existing 60s poller does one extra `list_applications` call per (user, org) and pipes any change through `set_state_if_changed` + history + WS broadcast. Mapping: `UP/SHOULD_BE_UP/WANTS_TO_BE_UP → ok`, `SHOULD_BE_DOWN/WANTS_TO_BE_DOWN/RESTART_FAILED → critical`, anything else → unknown. Addons seed to `ok` on existence (no CC state field). New helper `monitors/state_map.rs` is the single mapping source. Webhook arrivals still win when they fire (delta truth > poll truth in the same tick because `apply_state_change` runs immediately).
+- ✅ **Phase 11f** — per-metric storage + per-monitor debug endpoint. Refacto from wide-row `metric_samples` to per-metric `metric_readings (monitor_id, metric_name, ts, value)` (migration 017 + backfill from `metric_samples`). The poller writes one row per non-null metric per tick and prunes to `KEEP_N_PER_METRIC = 10` rows per (monitor, metric) atomically; total DB rows bounded by `monitors × 5 × 10`. After insert, the poller reads `latest_per_metric` and broadcasts the WS frame from that — disk's slow ~5 min cadence no longer flickers the bar. `rules::field::fetch` for `cpu/mem/disk/net_in/net_out` reads from `metric_readings` map; rules engine still gates `trigger_for_monitor` on `fresh_metric` (this poll produced new data) so threshold rules don't fire on stale carried-forward values. New endpoint `GET /api/orgs/:cc_org_id/monitors/:monitor_id/debug` returns `{monitor, cc_metrics_id, samples_count_30m, available_metrics, missing_metrics, latest_sample, last_poll_at, note}` — pure SQL on `metric_readings`, sub-50 ms response. Originally tried Warp10 `FIND` for live class enumeration but it hangs on CC's Warp10 over wide regex (3 iterations of failed attempts); pivoted to reading `metric_readings` itself which is the authoritative answer to "what did the poller actually capture for this app?". Frontend: small Bug button on `MonitorCard` (visible on hover) opens `MonitorDebugDialog` showing chips (green=present, red=missing) for the 5 expected metrics + the latest_sample row. `MetricBar` gains an `unavailable` state rendering "n/a" italic — distinct from "—" (no-data) and the warm shimmer (loading); `MonitorCard` computes per-metric state so disk can show "n/a" while cpu/mem show real values. `metric_samples` table kept in DB (no Rust writes anymore) as a backfill source / rollback safety; will be dropped in a future migration. Smoke: migration 017 applies, `SELECT count(*), monitor_id, metric_name FROM metric_readings GROUP BY ... HAVING count(*) > 10` returns 0 rows after every tick (pruning OK), debug endpoint responds <200 ms.
+- ✅ **Phase 11e** — addons metrics + network/disk + loading state. CC's Warp10 indexes both apps and addons under `app_id` label, but for addons the value is `realId` (`postgresql_xxx`) not `id` (`addon_xxx`) — the previous poller queried `addon_id` which never matched. Migration 016 adds `monitors.cc_metrics_id` (idempotent backfill from `metadata->>'real_id'` for addons). The poller groups by that column and queries Warp10 with `app_id` for both kinds. WarpScript template renamed `metrics_last_script` and extended to fetch `cpu.usage_user`, `mem.used_percent`, `disk.used_percent`, plus `net.bytes_recv` / `net.bytes_sent` (cumulative counters → `mapper.rate 1 0 0` per-instance BEFORE `MERGE`; order non-negotiable to avoid 100+ GB/s spikes on deploy). Parser `split_metrics` extracts the 5-tuple per id and drops negative net values (counter resets). `metric_samples::insert` (later replaced by `metric_readings::insert_and_prune` in 11f) accepts the 5 metrics. `WsFrame::MetricsSnapshot` carries `disk/net_in/net_out`. New endpoint `GET /api/orgs/:cc_org_id/snapshots` (multi-tenant guarded) returns the latest snapshot per monitor; the dashboard hydrates on mount via that endpoint instead of waiting up to 60 s for the next WS frame. Frontend: `MetricBar` gains a `loading` state (warm-shimmer keyframe in `globals.css`) and a fallback to "no-data" after 90 s of hydration if no sample arrives. `MonitorCard` renders 3 bars (CPU/MEM/DISK) plus a compact NET line `↓ 12 KB/s · ↑ 4 KB/s` with auto-scaled units (`formatBytesPerSec`). The poller chunks metric queries into batches of `WARP10_BATCH_SIZE = 3` ids (verified in prod 2026-05-09: 12-id chunks produce 31 KB scripts that timeout at 60 s on CC's Warp10 with `mapper.rate` over 5 m of counter data; 3-id chunks fit comfortably). HTTP client timeout bumped from 30 s to 60 s defensively. `warp10_client` logs the full reqwest cause chain + `script_head` on failure to make root-causing fast.
 - ✅ **Phase 11d** — `docs/` directory created. Two English Markdown files: `docs/USER_GUIDE.md` walks an end user through the deployed UI (sign-in, webhook setup, dashboard, groups, visual rule editor with cooldown semantics, channels with kind-specific forms, debug panel, theme toggle, troubleshooting). `docs/DEVELOPER_GUIDE.md` distils CLAUDE.md for engineers (mission + multi-tenant model, stack, repo layout, local dev setup, architecture with the ASCII diagram, Postgres data model, OAuth 1.0a flow, webhook lifecycle, workflow engine internals, notification dispatch, WS + LISTEN/NOTIFY, advisory locks, deploy on CC, diagnostic endpoint, conventions). CLAUDE.md gets a top-of-file pointer to both. README.md gets a Documentation section listing the three docs (CLAUDE.md = spec, USER_GUIDE = users, DEVELOPER_GUIDE = engineers). No deploy needed.
 - ✅ **Phase 11c** — root-cause: rules never fired from webhooks/poll + observability + diagnostic endpoint. User reported a rule that never sent its notification when an app went critical. Investigation revealed:
   - **Critical wiring bug**: `bus/consumer.rs::apply_state_change` (the function called when a webhook causes a monitor state transition) and `monitors/poller.rs::refresh_app_state` / `write_sample` (the poll equivalents) **never called `rules::exec::trigger_for_monitor`**. The Phase 6 hook in apply_state_change was a stub: it loaded the monitor row then immediately did `let _ = monitor;` with a comment saying "for Phase 6 we trigger via a dedicated lightweight path that takes only what it needs (pool + user_id) and re-loads any other state" — but that lightweight path was never written. The only place actually calling `trigger_for_monitor_with_depth` was `actions.rs:117` (the chain-after-SetMonitorState path). End result: zero rules ever fired from any webhook or poll cycle since Phase 6 shipped. Fix: thread `AppState` (instead of bare `&PgPool`) into both `bus::consumer::run` and `monitors::poller::run`; rebuild `AppState` earlier in `main.rs` before spawning those tasks; call `trigger_for_monitor(state, user_id, monitor.id, Trigger::Webhook)` in `apply_state_change` after a real transition, and `Trigger::Poll { monitor_id }` in the poller after both `refresh_app_state` state-change branches and after each successful `write_sample` (so threshold conditions on cpu/mem are evaluated every 60s tick).

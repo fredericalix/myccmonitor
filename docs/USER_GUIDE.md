@@ -64,11 +64,39 @@ Click any org from `/orgs` to land on its dashboard at `/orgs/{cc_org_id}`.
 Each monitor is a card with:
 
 - **State dot + name** — the dot animates with a "ping" pulse when state is `critical`. State badges are colour-coded: green (`ok`), amber (`warning`), terracotta (`critical`), warm grey (`unknown`).
-- **CPU and MEM bars** — gradient warm-coloured bars filled with the latest Warp10 reading (peach below 75 %, amber 75–89 %, terracotta ≥ 90 %). Updates every 60 s via the poller.
+- **CPU, MEM and DISK bars** — gradient warm-coloured bars filled with the latest Warp10 reading (peach below 75 %, amber 75–89 %, terracotta ≥ 90 %). Updates every 60 s via the poller.
+- **NET line** — a compact `↓ {download} · ↑ {upload}` line below the bars with auto-scaled units (B/KB/MB/GB per second).
 - **Message** — the last status message (e.g. `deploy succeeded`).
 - **"Since"** timestamp — how long the monitor has held its current state.
+- **Bug button** (visible on hover, bottom-right) — opens the per-monitor diagnostic panel. See [Monitor diagnostic](#monitor-diagnostic).
 
 When a fresh frame arrives over WebSocket, the whole card briefly pulses with a warm shadow so you can spot what just changed.
+
+### Metric rendering states
+
+A bar (or the NET line) can be in three visual states:
+
+- **Live value** (warm gradient + percentage / B/s) — fresh sample from CC's Warp10. Updates every poll.
+- **Warm shimmer** (gradient animation, no value) — the dashboard just opened and we're still hydrating the first sample. Lasts up to ~90 s; if no sample arrives by then, the bar switches to:
+- **`n/a`** (italic, muted) — CC's Warp10 doesn't emit this metric class for this app's runtime. **Not a bug, not a loading state**: the metric is genuinely unavailable. Click the **Bug** button on the card to confirm via the diagnostic panel — it tells you exactly which classes are missing for this monitor.
+
+The dashboard always shows the **last known value per metric**. CC emits some metrics at different cadences (notably `disk.used_percent` ~5 min vs `cpu.usage_user` ~1 min), so a fresh poll may write CPU/MEM but not DISK. The bar still shows the disk reading from a few minutes ago — the value only goes back to `n/a` after ~50 min of no readings (10 readings × ~5 min cadence).
+
+### Monitor diagnostic
+
+Click the **Bug** icon at the bottom-right of any MonitorCard to open the diagnostic dialog. It's a read-only snapshot answering "**why is disk/net empty for this app?**" with the database itself.
+
+What you see:
+
+- **Monitor** — id, kind, current state, `cc_resource_id` (the CC API id, e.g. `app_xxx`/`addon_xxx`), `cc_metrics_id` (the Warp10 lookup key — `realId` for add-ons), last poll timestamp.
+- **Metric availability — last 30m of polls**:
+  - "**X samples written in the last 30m**" — total readings across all 5 metrics. If `0`, the poller hasn't run yet for this monitor; wait ~60 s and refresh.
+  - One coloured chip per expected metric (cpu, mem, disk, net_in, net_out): **green** = at least one reading in the window, **red** = no reading. Red chips are the answer: CC simply isn't reporting that class for this app's runtime — there's nothing myccmonitor can fix server-side.
+- **Latest sample** — the values that drive the bars right now. Each metric carries its own `ts` (the moment it was last received), so disk's timestamp may legitimately differ from cpu's by a few minutes.
+
+Hit **Refresh** to re-fetch without closing the dialog. Hit **Close** or `Esc` to dismiss. The diagnostic never mutates anything.
+
+> Different runtimes emit different metric sets. Multi-instance Node.js apps frequently lack disk metrics; some addon types lack network. Compare a "broken" app with a healthy one in the same org if you're unsure — if the healthy app's chips are also red, the gap is on CC's side.
 
 **Live indicator.** The sidebar bottom shows a small status pill: green dot **Live** (WebSocket connected), amber **Reconnecting**, red **Offline**. If you see Offline for more than ~30 s, refresh the page; the data on screen may be stale.
 
@@ -233,6 +261,24 @@ If a monitor has been `unknown` for ≥ 5 minutes despite the app being up on CC
 ### "Notification arrived but to the wrong place"
 
 Every notification is recorded in the audit log (`alerts` table). Check the rule's recent firings via the Debug panel — each `matched` firing has the action summaries. If the channel ID looks wrong, edit the rule's action node and re-save.
+
+### "Some metric bars show n/a even though others have values"
+
+That's **expected**, not a bug. Different CC runtimes emit different sets of Warp10 classes — Node.js apps often lack `disk.used_percent`, multi-instance setups sometimes lack network metrics, etc.
+
+To confirm:
+
+1. Click the **Bug** icon at the bottom-right of the affected MonitorCard.
+2. Look at **Metric availability — last 30m of polls**. Red chips list the metrics CC isn't emitting for this app.
+3. Compare with a healthy monitor in the same org (e.g. a Java app). If the healthy one has all green chips and yours has reds, the gap is genuinely on CC's side and there's nothing the dashboard can do about it.
+
+If **all** metrics for **all** monitors show `n/a` after waiting more than ~2 minutes, that points to an outage instead — check `https://myccmonitor-backend.cleverapps.io/health` and look for poller errors in `clever logs --alias myccmonitor-backend`.
+
+### "The disk bar disappeared then came back a few minutes later"
+
+CC emits `disk.used_percent` every ~5 minutes, while CPU/MEM come every ~1 minute. Older versions of myccmonitor stored "snapshots" (one row per poll with NULL columns when a metric was missed), which made the bar flicker.
+
+Since Phase 11f, each metric is stored independently (`metric_readings` table) and the dashboard always shows the **last known value per metric**. You should never see flickering anymore. If you do, click the Bug icon to confirm there are samples in the last 30 minutes, and report the screenshot — the carry-forward is broken if disk really alternates between value and `n/a` repeatedly.
 
 ### "The rule editor crashed"
 
