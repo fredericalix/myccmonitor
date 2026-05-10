@@ -24,20 +24,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "myccmonitor",
-  description: "Supervision chaleureuse pour vos apps Clever Cloud",
+  description: "Industrial supervision for Clever Cloud apps",
 };
-
-// Inline script: read theme from localStorage before hydration to avoid flash.
-const themeBootstrap = `
-(function () {
-  try {
-    var stored = localStorage.getItem('myccmonitor.theme');
-    var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    var theme = stored || (prefersDark ? 'dark' : 'light');
-    if (theme === 'dark') document.documentElement.classList.add('dark');
-  } catch (e) {}
-})();
-`;
 
 export default function RootLayout({
   children,
@@ -49,12 +37,7 @@ export default function RootLayout({
       lang="en"
       className={`${interTight.variable} ${instrumentSerif.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
-      </head>
-      <body className="min-h-full flex flex-col bg-bg text-text">
-        {children}
-      </body>
+      <body className="min-h-full flex flex-col text-text">{children}</body>
     </html>
   );
 }

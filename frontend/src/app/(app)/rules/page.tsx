@@ -2,17 +2,29 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Lightning, Plus } from "@phosphor-icons/react";
+import { ArrowRight, Lightning, Plus, Scroll } from "@phosphor-icons/react";
 import { api, ApiError } from "@/services/api";
 import type { Rule } from "@/services/types";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Card } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
+import { BlueprintCard } from "@/components/forge/BlueprintCard";
+import { LedIndicator } from "@/components/forge/LedIndicator";
+import { RiveterButton } from "@/components/forge/RiveterButton";
+import { MachineCard } from "@/components/forge/MachineCard";
 import { Badge } from "@/components/ui/Badge";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 
-export default function RulesPage() {
+function formatRelative(iso: string | null): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  const diff = Date.now() - date.getTime();
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return date.toLocaleDateString();
+}
+
+export default function BlueprintLibraryPage() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -43,14 +55,18 @@ export default function RulesPage() {
   return (
     <>
       <PageHeader
-        title="Workflow rules"
-        description="Visual rules that watch your monitors, evaluate composite conditions, and fan out actions: setMonitorState, sendNotification, escalate."
+        title={
+          <span className="font-serif italic text-[var(--forge-text-accent)]">
+            Blueprint library
+          </span>
+        }
+        description="Workflow blueprints that watch the floor, evaluate composite conditions, and fire actions in parallel: set monitor state, broadcast notifications, escalate."
         actions={
           <Link href="/rules/new">
-            <Button variant="primary">
-              <Plus weight="bold" size={16} />
-              New rule
-            </Button>
+            <RiveterButton variant="primary">
+              <Plus weight="bold" size={14} />
+              New blueprint
+            </RiveterButton>
           </Link>
         }
       />
@@ -61,20 +77,20 @@ export default function RulesPage() {
           <SkeletonCard />
         </div>
       ) : error ? (
-        <Card className="p-5 border-critical/30 bg-critical-soft">
-          <p className="text-sm text-critical">{error}</p>
-        </Card>
+        <MachineCard variant="action" className="p-4">
+          <p className="text-[12px] text-[var(--forge-text)]">{error}</p>
+        </MachineCard>
       ) : rules.length === 0 ? (
         <EmptyState
-          icon={<Lightning weight="duotone" size={28} />}
-          title="No rules yet"
-          description="Create your first workflow rule with the visual editor — drag conditions, AND/OR them, fan out actions in parallel."
+          icon={<Scroll weight="duotone" size={28} />}
+          title="No blueprints yet"
+          description="Draft your first workflow blueprint with the visual forge — drag sensors, AND/OR them, fan out actuators in parallel."
           action={
             <Link href="/rules/new">
-              <Button variant="primary">
-                <Plus weight="bold" size={16} />
-                Create your first rule
-              </Button>
+              <RiveterButton variant="primary">
+                <Plus weight="bold" size={14} />
+                Draft the first blueprint
+              </RiveterButton>
             </Link>
           }
         />
@@ -82,39 +98,49 @@ export default function RulesPage() {
         <ul className="space-y-3">
           {rules.map((r) => (
             <li key={r.id}>
-              <Card variant="interactive" className="p-5">
-                <div className="flex items-center justify-between gap-3">
+              <BlueprintCard className="p-4 hover:-translate-y-0.5 hover:brightness-110 transition-[transform,filter] duration-150">
+                <div className="relative z-10 flex items-center justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-serif text-xl text-text truncate">
+                      <LedIndicator
+                        state={r.is_enabled ? "ok" : "unknown"}
+                        size="sm"
+                        pulse={false}
+                      />
+                      <span className="font-serif text-[18px] text-[var(--forge-text)] truncate">
                         {r.name}
                       </span>
+                      <Lightning
+                        weight="fill"
+                        size={11}
+                        className="text-[var(--copper-glow)]"
+                      />
                       {r.is_enabled ? (
-                        <Badge variant="ok">enabled</Badge>
+                        <Badge variant="ok">live</Badge>
                       ) : (
-                        <Badge variant="unknown">disabled</Badge>
+                        <Badge variant="unknown">paused</Badge>
                       )}
                       {r.last_outcome_state ? (
                         <Badge variant="accent">
-                          last → {r.last_outcome_state}
+                          last outcome → {r.last_outcome_state}
                         </Badge>
                       ) : null}
                     </div>
-                    <p className="mt-1.5 text-xs text-text-muted">
+                    <p className="mt-1.5 text-[11px] text-[var(--forge-text-muted)] font-mono">
                       cooldown {r.cooldown_seconds}s ·{" "}
                       {r.last_fired_at
-                        ? `last fired ${new Date(r.last_fired_at).toLocaleString()}`
+                        ? `last fired ${formatRelative(r.last_fired_at)}`
                         : "never fired"}
                     </p>
                   </div>
                   <Link href={`/rules/${r.id}`}>
-                    <Button variant="ghost" size="sm">
-                      Edit
-                      <ArrowRight weight="bold" size={14} />
-                    </Button>
+                    <RiveterButton variant="ghost" size="sm">
+                      Open
+                      <ArrowRight weight="bold" size={12} />
+                    </RiveterButton>
                   </Link>
                 </div>
-              </Card>
+              </BlueprintCard>
             </li>
           ))}
         </ul>

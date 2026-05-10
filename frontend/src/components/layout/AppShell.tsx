@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
-import { Sidebar } from "./Sidebar";
+import { ControlPanel } from "./ControlPanel";
 import { Toaster } from "@/components/ui/Toaster";
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-screen w-full bg-bg text-text">
-      <Sidebar />
+    <div className="flex min-h-screen w-full">
+      <ControlPanel />
       <main className="flex-1 min-w-0 px-6 py-10 sm:px-10 lg:px-12 lg:py-12">
         <div className="mx-auto w-full max-w-6xl">{children}</div>
       </main>

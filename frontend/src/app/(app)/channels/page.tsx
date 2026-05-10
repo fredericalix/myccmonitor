@@ -19,8 +19,11 @@ import type {
   UpsertChannelInput,
 } from "@/services/types";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Card } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
+import { MachineCard } from "@/components/forge/MachineCard";
+import { Antenna } from "@/components/forge/Antenna";
+import { SignalBars } from "@/components/forge/SignalBars";
+import { LedIndicator } from "@/components/forge/LedIndicator";
+import { RiveterButton } from "@/components/forge/RiveterButton";
 import { Input, Select } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { Chip } from "@/components/ui/Chip";
@@ -69,7 +72,7 @@ interface GenericConfig {
   headers: { key: string; value: string }[];
 }
 
-export default function ChannelsPage() {
+export default function RelayTowerPage() {
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -163,12 +166,12 @@ export default function ChannelsPage() {
         config: liveConfig,
       };
       await api.createChannel(input);
-      toast.success("Channel created");
+      toast.success("Transmitter wired in");
       resetForm();
       setShowForm(false);
       refresh();
     } catch (err: unknown) {
-      toast.error("Create failed", {
+      toast.error("Wire-in failed", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -179,7 +182,7 @@ export default function ChannelsPage() {
   async function deleteChannel(id: string) {
     try {
       await api.deleteChannel(id);
-      toast.success("Channel deleted");
+      toast.success("Transmitter removed");
       refresh();
     } catch (err: unknown) {
       toast.error("Delete failed", {
@@ -193,24 +196,28 @@ export default function ChannelsPage() {
   return (
     <>
       <PageHeader
-        title="Notification channels"
-        description="Outgoing routes for send_notification actions. Email, Slack, Discord, and generic webhook destinations."
+        title={
+          <span className="font-serif italic text-[var(--forge-text-accent)]">
+            Relay tower
+          </span>
+        }
+        description="Outbound transmitters for send_notification actions. Email, Slack, Discord, generic webhook."
         actions={
-          <Button variant="primary" onClick={() => setShowForm((s) => !s)}>
-            <Plus weight="bold" size={16} />
-            New channel
-          </Button>
+          <RiveterButton variant="primary" onClick={() => setShowForm((s) => !s)}>
+            <Plus weight="bold" size={14} />
+            New transmitter
+          </RiveterButton>
         }
       />
 
       {showForm ? (
-        <Card variant="elevated" className="p-5 mb-6">
+        <MachineCard className="p-5 mb-6">
           <form onSubmit={createChannel}>
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_minmax(0,360px)] gap-6">
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Input
-                    label="Channel name"
+                    label="Transmitter name"
                     value={name}
                     onChange={(ev) => setName(ev.target.value)}
                     placeholder="Slack #ops-alerts"
@@ -229,16 +236,16 @@ export default function ChannelsPage() {
                   </Select>
                 </div>
 
-                <div className="rounded-xl bg-bg/50 border border-border p-4 space-y-4">
-                  <p className="flex items-center gap-2 text-sm text-text-muted">
-                    <span className="text-accent-strong">{KIND_META[kind].icon}</span>
+                <div className="rounded-[6px] bg-[var(--forge-floor-deep)]/70 border border-[var(--forge-rim-dim)] p-4 space-y-4">
+                  <p className="flex items-center gap-2 text-[11px] text-[var(--forge-text-muted)]">
+                    <span className="text-[var(--copper-glow)]">{KIND_META[kind].icon}</span>
                     {KIND_META[kind].tagline}
                   </p>
 
                   {kind === "email" ? (
                     <>
                       <div>
-                        <p className="text-xs font-medium text-text-muted mb-1.5">
+                        <p className="text-[10px] font-bold uppercase tracking-[1px] text-[var(--forge-text-dim)] mb-1.5">
                           Recipients
                         </p>
                         <div className="flex flex-wrap gap-1.5 mb-2">
@@ -269,11 +276,11 @@ export default function ChannelsPage() {
                               }
                             }}
                             placeholder="alerts@example.com (Enter to add)"
-                            className="flex-1 rounded-md border border-border bg-elevated px-3 py-2 text-sm focus:border-accent focus:ring-2 focus:ring-accent/30 focus:outline-none"
+                            className="flex-1 rounded-[4px] border border-[var(--forge-rim-dim)] bg-[var(--forge-floor-deep)] px-3 py-2 text-[12px] text-[var(--forge-text)] focus:border-[var(--copper-glow)] focus:outline-none"
                           />
-                          <Button type="button" variant="secondary" size="md" onClick={addEmail}>
+                          <RiveterButton type="button" onClick={addEmail}>
                             Add
-                          </Button>
+                          </RiveterButton>
                         </div>
                       </div>
                       <Input
@@ -349,13 +356,13 @@ export default function ChannelsPage() {
                       </div>
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
-                          <p className="text-xs font-medium text-text-muted">
+                          <p className="text-[10px] font-bold uppercase tracking-[1px] text-[var(--forge-text-dim)]">
                             Headers
                           </p>
-                          <Button type="button" variant="ghost" size="sm" onClick={addHeader}>
-                            <Plus weight="bold" size={12} />
+                          <RiveterButton type="button" variant="ghost" size="sm" onClick={addHeader}>
+                            <Plus weight="bold" size={11} />
                             Add header
-                          </Button>
+                          </RiveterButton>
                         </div>
                         <div className="space-y-2">
                           {generic.headers.map((h, idx) => (
@@ -384,10 +391,10 @@ export default function ChannelsPage() {
                                   }))
                                 }
                               />
-                              <Button
+                              <RiveterButton
                                 type="button"
                                 variant="ghost"
-                                size="md"
+                                size="sm"
                                 onClick={() =>
                                   setGeneric((g) => ({
                                     ...g,
@@ -396,11 +403,11 @@ export default function ChannelsPage() {
                                 }
                               >
                                 <X weight="bold" />
-                              </Button>
+                              </RiveterButton>
                             </div>
                           ))}
                           {generic.headers.length === 0 ? (
-                            <p className="text-xs text-text-subtle">
+                            <p className="text-[11px] text-[var(--forge-text-dim)]">
                               No headers — body still posts as JSON.
                             </p>
                           ) : null}
@@ -411,7 +418,7 @@ export default function ChannelsPage() {
                 </div>
 
                 <div className="flex justify-end gap-2 pt-1">
-                  <Button
+                  <RiveterButton
                     variant="ghost"
                     onClick={() => {
                       setShowForm(false);
@@ -420,28 +427,31 @@ export default function ChannelsPage() {
                     disabled={creating}
                   >
                     Cancel
-                  </Button>
-                  <Button type="submit" variant="primary" disabled={creating || !name.trim()}>
-                    {creating ? "Creating…" : "Create channel"}
-                  </Button>
+                  </RiveterButton>
+                  <RiveterButton type="submit" variant="primary" disabled={creating || !name.trim()}>
+                    {creating ? "Wiring in…" : "Wire in"}
+                  </RiveterButton>
                 </div>
               </div>
 
               <aside>
-                <p className="text-xs font-medium text-text-muted mb-2 tracking-wide">
+                <p className="text-[10px] font-bold uppercase tracking-[1px] text-[var(--forge-text-dim)] mb-2">
                   Live config preview
                 </p>
-                <pre className="rounded-xl bg-bg/60 border border-border p-3 font-mono text-[11px] text-text leading-relaxed overflow-x-auto">
+                <pre className="rounded-[6px] bg-[var(--forge-floor-deep)] border border-[var(--forge-rim-dim)] p-3 font-mono text-[11px] text-[var(--forge-text)] leading-relaxed overflow-x-auto">
                   {JSON.stringify(liveConfig, null, 2)}
                 </pre>
-                <p className="mt-2 text-[11px] text-text-subtle leading-relaxed">
-                  This is the JSON that gets persisted in{" "}
-                  <code className="font-mono">notification_channels.config</code>.
+                <p className="mt-2 text-[10px] text-[var(--forge-text-dim)] leading-relaxed">
+                  This is the JSON persisted in{" "}
+                  <code className="font-mono text-[var(--forge-text-muted)]">
+                    notification_channels.config
+                  </code>
+                  .
                 </p>
               </aside>
             </div>
           </form>
-        </Card>
+        </MachineCard>
       ) : null}
 
       {loading ? (
@@ -450,78 +460,95 @@ export default function ChannelsPage() {
           <SkeletonCard />
         </div>
       ) : error ? (
-        <Card className="p-5 border-critical/30 bg-critical-soft">
-          <p className="text-sm text-critical">{error}</p>
-        </Card>
+        <MachineCard variant="action" className="p-4">
+          <p className="text-[12px] text-[var(--forge-text)]">{error}</p>
+        </MachineCard>
       ) : channels.length === 0 ? (
         <EmptyState
           icon={<PaperPlaneTilt weight="duotone" size={28} />}
-          title="No channels yet"
-          description="Add a destination to start receiving alerts from send_notification action nodes in your rules."
+          title="No transmitters wired in yet"
+          description="Wire a destination to start broadcasting alerts from send_notification action nodes."
           action={
-            <Button variant="primary" onClick={() => setShowForm(true)}>
-              <Plus weight="bold" size={16} />
-              Create your first channel
-            </Button>
+            <RiveterButton variant="primary" onClick={() => setShowForm(true)}>
+              <Plus weight="bold" size={14} />
+              Wire your first transmitter
+            </RiveterButton>
           }
         />
       ) : (
         <ul className="space-y-3">
-          {channels.map((c) => (
-            <li key={c.id}>
-              <Card variant="default" className="p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-accent-strong">
-                        {KIND_META[c.kind].icon}
-                      </span>
-                      <span className="font-serif text-xl text-text truncate">
-                        {c.name}
-                      </span>
-                      <Badge variant="neutral">{c.kind}</Badge>
-                      {!c.enabled ? <Badge variant="warning">disabled</Badge> : null}
-                      {c.failure_count > 0 ? (
-                        <Badge variant="critical">
-                          {c.failure_count} failure
-                          {c.failure_count === 1 ? "" : "s"}
-                        </Badge>
+          {channels.map((c) => {
+            const ledState = !c.enabled
+              ? "unknown"
+              : c.failure_count > 0 && !c.last_success_at
+                ? "critical"
+                : c.failure_count > 0
+                  ? "warning"
+                  : "ok";
+            return (
+              <li key={c.id}>
+                <MachineCard className="p-4">
+                  <div className="flex items-start gap-3">
+                    <Antenna icon={KIND_META[c.kind].icon} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <LedIndicator state={ledState} size="sm" />
+                        <span className="font-serif text-[16px] text-[var(--forge-text)] truncate">
+                          {c.name}
+                        </span>
+                        <Badge variant="neutral">{c.kind}</Badge>
+                        {!c.enabled ? <Badge variant="warning">disabled</Badge> : null}
+                        {c.failure_count > 0 ? (
+                          <Badge variant="critical">
+                            {c.failure_count} failure
+                            {c.failure_count === 1 ? "" : "s"}
+                          </Badge>
+                        ) : null}
+                      </div>
+                      {c.last_success_at ? (
+                        <p className="mt-1 text-[11px] text-[var(--forge-text-dim)] font-mono">
+                          last success {new Date(c.last_success_at).toLocaleString()}
+                        </p>
                       ) : null}
+                      {c.last_failure_message ? (
+                        <p className="mt-1 text-[11px] text-[var(--led-crit)]">
+                          last error: {c.last_failure_message}
+                        </p>
+                      ) : null}
+                      <pre className="mt-3 overflow-x-auto rounded-[6px] bg-[var(--forge-floor-deep)] border border-[var(--forge-rim-dim)] p-3 font-mono text-[10px] text-[var(--forge-text)] leading-relaxed">
+                        {JSON.stringify(c.config, null, 2)}
+                      </pre>
                     </div>
-                    {c.last_success_at ? (
-                      <p className="mt-1 text-xs text-text-subtle">
-                        last success {new Date(c.last_success_at).toLocaleString()}
-                      </p>
-                    ) : null}
-                    {c.last_failure_message ? (
-                      <p className="mt-1 text-xs text-critical">
-                        last error: {c.last_failure_message}
-                      </p>
-                    ) : null}
-                    <pre className="mt-3 overflow-x-auto rounded-lg bg-bg/60 border border-border p-3 font-mono text-[11px] text-text leading-relaxed">
-                      {JSON.stringify(c.config, null, 2)}
-                    </pre>
+                    <div className="flex flex-col items-end gap-2">
+                      <SignalBars
+                        failureCount={c.failure_count}
+                        hasRecentSuccess={!!c.last_success_at}
+                        disabled={!c.enabled}
+                      />
+                      <RiveterButton
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setConfirmDeleteId(c.id)}
+                        aria-label="Remove transmitter"
+                      >
+                        <Trash weight="bold" size={12} />
+                      </RiveterButton>
+                    </div>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setConfirmDeleteId(c.id)}
-                    aria-label="Delete channel"
-                  >
-                    <Trash weight="bold" size={14} />
-                  </Button>
-                </div>
-              </Card>
-            </li>
-          ))}
+                </MachineCard>
+              </li>
+            );
+          })}
         </ul>
       )}
 
-      <p className="mt-8 text-xs text-text-subtle inline-flex items-center gap-1.5">
-        <AddressBookTabs size={12} weight="bold" />
-        Channel IDs are referenced by{" "}
-        <code className="font-mono mx-1">send_notification</code> action nodes in
-        the rule editor.
+      <p className="mt-8 text-[10px] uppercase tracking-[1px] text-[var(--forge-text-dim)] inline-flex items-center gap-1.5 font-mono">
+        <AddressBookTabs size={11} weight="bold" />
+        Transmitter IDs are referenced by{" "}
+        <code className="font-mono mx-1 text-[var(--forge-text-muted)]">
+          send_notification
+        </code>{" "}
+        action nodes in the rule editor.
       </p>
 
       <ConfirmDialog
@@ -532,9 +559,9 @@ export default function ChannelsPage() {
             return deleteChannel(confirmDeleteId);
           }
         }}
-        title="Delete this channel?"
-        description="Rules referencing it will fail to send until you point them elsewhere."
-        confirmLabel="Delete channel"
+        title="Remove this transmitter?"
+        description="Rules referencing it will fail to broadcast until you point them elsewhere."
+        confirmLabel="Remove"
         destructive
       />
     </>
