@@ -66,6 +66,52 @@ pub async fn latest(
     .await
 }
 
+/// Per-metric availability over a sliding window of polls. A boolean is
+/// `true` if at least one row in the window has a non-null value for that
+/// column. Source of truth for the "why is disk/net empty for this app?"
+/// debug question — see `monitor_debug` handler.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MetricAvailability {
+    pub samples_count: i64,
+    pub cpu: bool,
+    pub mem: bool,
+    pub disk: bool,
+    pub net_in: bool,
+    pub net_out: bool,
+}
+
+pub async fn availability(
+    pool: &PgPool,
+    monitor_id: Uuid,
+    since: DateTime<Utc>,
+) -> Result<MetricAvailability, sqlx::Error> {
+    let row: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT
+          COUNT(*),
+          COUNT(*) FILTER (WHERE cpu IS NOT NULL),
+          COUNT(*) FILTER (WHERE mem IS NOT NULL),
+          COUNT(*) FILTER (WHERE disk IS NOT NULL),
+          COUNT(*) FILTER (WHERE net_in IS NOT NULL),
+          COUNT(*) FILTER (WHERE net_out IS NOT NULL)
+        FROM metric_samples
+        WHERE monitor_id = $1 AND ts >= $2
+        "#,
+    )
+    .bind(monitor_id)
+    .bind(since)
+    .fetch_one(pool)
+    .await?;
+    Ok(MetricAvailability {
+        samples_count: row.0,
+        cpu: row.1 > 0,
+        mem: row.2 > 0,
+        disk: row.3 > 0,
+        net_in: row.4 > 0,
+        net_out: row.5 > 0,
+    })
+}
+
 /// Latest sample per monitor for a given (user, org). Used by the frontend
 /// hydration endpoint so the dashboard paints metrics immediately on mount
 /// instead of waiting up to 60 s for the next WS frame.

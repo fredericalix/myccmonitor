@@ -8,7 +8,6 @@ use crate::db::monitors::{self, Monitor};
 use crate::db::orgs::{self, Org, OrgInput};
 use crate::db::webhook_configs::{self, WebhookConfig};
 use crate::error::AppError;
-use crate::metrics;
 use crate::monitors::sync;
 use crate::state::AppState;
 use axum::Json;
@@ -16,7 +15,7 @@ use axum::Router;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use base64::Engine;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use serde::Serialize;
 use uuid::Uuid;
@@ -34,29 +33,28 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// Five Warp10 classes the poller queries on every cycle. Re-listed here so
-/// the debug payload can compute `missing_classes = expected ∖ warp10` and
-/// answer "why is disk/net null for this app?" in one round-trip.
-const EXPECTED_WARP10_CLASSES: &[&str] = &[
-    "cpu.usage_user",
-    "mem.used_percent",
-    "disk.used_percent",
-    "net.bytes_recv",
-    "net.bytes_sent",
-];
+/// Five metrics the poller writes to `metric_samples` on every cycle. The
+/// debug endpoint compares this set against what the table actually has on
+/// the last 30 min to answer "why is disk/net empty for this app?".
+const EXPECTED_METRICS: &[&str] = &["cpu", "mem", "disk", "net_in", "net_out"];
+const DEBUG_WINDOW_MINUTES: i64 = 30;
 
 #[derive(Serialize)]
 struct MonitorDebugResponse {
     monitor: Monitor,
     cc_metrics_id: Option<String>,
-    /// Every class Warp10 actually has data for over the last hour, scoped
-    /// to this monitor's metrics id. Includes system classes the poller
-    /// doesn't consume — useful for debugging.
-    warp10_classes: Vec<String>,
-    expected_classes: &'static [&'static str],
-    /// `expected_classes ∖ warp10_classes`. If non-empty, those classes are
-    /// genuinely not emitted by CC for this app — the bars will stay "n/a".
-    missing_classes: Vec<String>,
+    /// Number of poll samples written for this monitor in the analysis
+    /// window. 0 means the poller hasn't written anything yet — expect a
+    /// value within 60 s.
+    samples_count_30m: i64,
+    window: &'static str,
+    /// Metrics with at least one non-null value in the window. These are
+    /// the ones CC's Warp10 actually emits for this app's runtime.
+    available_metrics: Vec<&'static str>,
+    /// `expected_metrics ∖ available_metrics`. The answer to the user's
+    /// "why is disk/net empty?" — these are not emitted by CC for this app.
+    missing_metrics: Vec<&'static str>,
+    expected_metrics: &'static [&'static str],
     latest_sample: Option<MetricSample>,
     last_poll_at: Option<DateTime<Utc>>,
     note: Option<&'static str>,
@@ -83,59 +81,45 @@ async fn monitor_debug(
 
     let last_poll_at = monitor.last_poll_at;
     let latest_sample = metric_samples::latest(&state.pool, monitor.id).await?;
+    let since = Utc::now() - Duration::minutes(DEBUG_WINDOW_MINUTES);
+    let availability = metric_samples::availability(&state.pool, monitor.id, since).await?;
 
-    // Synthetic monitors and any monitor without a metrics id can't be
-    // probed against Warp10. Return early with an explanation rather than
-    // making a useless API call.
-    let Some(metrics_id) = monitor.cc_metrics_id.clone() else {
-        return Ok(Json(MonitorDebugResponse {
-            monitor,
-            cc_metrics_id: None,
-            warp10_classes: Vec::new(),
-            expected_classes: EXPECTED_WARP10_CLASSES,
-            missing_classes: EXPECTED_WARP10_CLASSES.iter().map(|s| s.to_string()).collect(),
-            latest_sample,
-            last_poll_at,
-            note: Some("monitor has no Warp10 mapping (synthetic or pre-migration row)"),
-        }));
+    let mut available_metrics = Vec::new();
+    let mut missing_metrics = Vec::new();
+    let pairs: [(&'static str, bool); 5] = [
+        ("cpu", availability.cpu),
+        ("mem", availability.mem),
+        ("disk", availability.disk),
+        ("net_in", availability.net_in),
+        ("net_out", availability.net_out),
+    ];
+    for (name, present) in pairs {
+        if present {
+            available_metrics.push(name);
+        } else {
+            missing_metrics.push(name);
+        }
+    }
+
+    let note = if monitor.cc_metrics_id.is_none() {
+        Some("synthetic monitor — not backed by Warp10 data")
+    } else if availability.samples_count == 0 {
+        Some("no samples written in the last 30 min — wait for the next poll cycle (~60 s)")
+    } else {
+        None
     };
 
-    let cc = CcClient::new(
-        &state.http,
-        &state.cfg,
-        &auth.access_token,
-        &auth.access_secret,
-    );
-    let warp10_classes = metrics::fetch_classes(
-        &state.cfg,
-        &state.http,
-        &cc,
-        &state.warp10_token_cache,
-        auth.id,
-        &cc_org_id,
-        "app_id",
-        &metrics_id,
-    )
-    .await
-    .map_err(|e| AppError::CcApi(format!("warp10 FIND: {e}")))?;
-
-    let warp10_set: std::collections::HashSet<&str> =
-        warp10_classes.iter().map(String::as_str).collect();
-    let missing_classes: Vec<String> = EXPECTED_WARP10_CLASSES
-        .iter()
-        .filter(|c| !warp10_set.contains(*c))
-        .map(|s| s.to_string())
-        .collect();
-
     Ok(Json(MonitorDebugResponse {
-        monitor,
-        cc_metrics_id: Some(metrics_id),
-        warp10_classes,
-        expected_classes: EXPECTED_WARP10_CLASSES,
-        missing_classes,
+        monitor: monitor.clone(),
+        cc_metrics_id: monitor.cc_metrics_id.clone(),
+        samples_count_30m: availability.samples_count,
+        window: "30m",
+        available_metrics,
+        missing_metrics,
+        expected_metrics: EXPECTED_METRICS,
         latest_sample,
         last_poll_at,
-        note: None,
+        note,
     }))
 }
 

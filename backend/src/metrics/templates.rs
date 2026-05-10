@@ -47,51 +47,6 @@ pub fn metrics_last_script(token: &str, label_name: &str, ids: &[String]) -> Str
     script
 }
 
-/// Build a Warp10 FIND query that returns metadata for every GTS in the
-/// `cpu.* / mem.* / disk.* / net.*` families belonging to this resource.
-/// FIND signature: `TOKEN CLASS_REGEX LABELS_MAP FIND` (3 params on the
-/// stack, NOT wrapped in a list like FETCH).
-///
-/// Initially we used `'~.*'` (match every class) but on CC's Warp10 that's
-/// too broad and takes minutes — the request hangs and the upstream proxy
-/// returns 500. Restricting to the 4 prefixes we actually consume is two
-/// orders of magnitude faster while still letting us spot CC alternative
-/// class names if any (e.g. `network.in` vs `net.bytes_recv`).
-pub fn find_classes_script(token: &str, label_name: &str, id: &str) -> String {
-    format!(
-        "'{token}' '~^(cpu|mem|disk|net)\\..*' {{ '{label}' '{id}' }} FIND",
-        token = token,
-        label = label_name,
-        id = id
-    )
-}
-
-/// Pull unique class names from a Warp10 FIND response. The response is a
-/// JSON array of GTS-shaped objects (or empty `[]`); we only care about each
-/// object's `c` field. Sorted + deduped for stable display.
-pub fn extract_classes(value: &serde_json::Value) -> Vec<String> {
-    use std::collections::BTreeSet;
-    let mut out = BTreeSet::new();
-
-    fn walk(v: &serde_json::Value, out: &mut BTreeSet<String>) {
-        match v {
-            serde_json::Value::Array(arr) => {
-                for item in arr {
-                    walk(item, out);
-                }
-            }
-            serde_json::Value::Object(obj) => {
-                if let Some(serde_json::Value::String(c)) = obj.get("c") {
-                    out.insert(c.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-    walk(value, &mut out);
-    out.into_iter().collect()
-}
-
 /// Walk the GTS response tree and pick the last numeric point per
 /// (id, metric class). Negative values on `net.*` (counter reset artefacts
 /// even after `mapper.rate`) are dropped.

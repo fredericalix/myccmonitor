@@ -146,19 +146,36 @@ export function MonitorDebugDialog({
             ) : null}
           </Section>
 
-          <Section title="Warp10 metric availability">
+          <Section title={`Metric availability — last ${data.window} of polls`}>
+            <p
+              className={cn(
+                "mb-2 text-[12px]",
+                data.samples_count_30m > 0
+                  ? "text-text-muted"
+                  : "text-warning",
+              )}
+            >
+              <span className="font-semibold tabular-nums">
+                {data.samples_count_30m}
+              </span>{" "}
+              {data.samples_count_30m === 1 ? "sample" : "samples"} written in
+              the last {data.window}.
+              {data.samples_count_30m === 0 ? (
+                <> Wait ~60 s and refresh.</>
+              ) : null}
+            </p>
             <p className="mb-2 text-[12px] text-text-muted">
-              The 5 classes the poller queries on every cycle. A red chip means
-              CC is not emitting that class for this app — the corresponding
-              bar will stay <em>n/a</em> (it&apos;s a CC-side limitation, not a
-              myccmonitor bug).
+              Red chips show metrics that no poll cycle reported in the
+              window. CC&apos;s Warp10 isn&apos;t emitting those classes for
+              this runtime — the bars will stay <em>n/a</em> until something
+              changes server-side.
             </p>
             <div className="flex flex-wrap gap-1.5">
-              {data.expected_classes.map((c) => {
-                const present = !data.missing_classes.includes(c);
+              {data.expected_metrics.map((m) => {
+                const present = data.available_metrics.includes(m);
                 return (
                   <span
-                    key={c}
+                    key={m}
                     className={cn(
                       "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-mono",
                       present
@@ -171,35 +188,11 @@ export function MonitorDebugDialog({
                     ) : (
                       <WarningCircle weight="bold" size={11} />
                     )}
-                    {c}
+                    {m}
                   </span>
                 );
               })}
             </div>
-          </Section>
-
-          <Section
-            title={`All Warp10 classes (${data.warp10_classes.length})`}
-            description="Every GTS class CC has data for this app over the last hour, including system metrics not consumed by the poller."
-          >
-            {data.warp10_classes.length === 0 ? (
-              <p className="text-[12px] text-text-subtle">
-                Warp10 has no data at all for this app over the last hour.
-                Either the app is fully stopped, or CC&apos;s metrics agent
-                isn&apos;t running on this runtime.
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {data.warp10_classes.map((c) => (
-                  <code
-                    key={c}
-                    className="rounded-md border border-border bg-bg/40 px-2 py-0.5 text-[11px]"
-                  >
-                    {c}
-                  </code>
-                ))}
-              </div>
-            )}
           </Section>
 
           <Section title="Latest sample">

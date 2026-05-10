@@ -11,9 +11,7 @@ pub mod warp10_client;
 
 use crate::api::cc_client::CcClient;
 use crate::config::Config;
-use crate::metrics::templates::{
-    MetricsTuple, extract_classes, find_classes_script, metrics_last_script, split_metrics,
-};
+use crate::metrics::templates::{MetricsTuple, metrics_last_script, split_metrics};
 use crate::metrics::tokens::TokenCache;
 use crate::metrics::warp10_client::execute_warpscript;
 use std::collections::HashMap;
@@ -93,22 +91,3 @@ pub async fn fetch_metrics(
     Ok(out)
 }
 
-/// Enumerate every Warp10 metric class CC has data for, scoped to a single
-/// resource id over the last hour. Powers the per-monitor debug endpoint —
-/// lets us see why some apps never show disk/net (CC just doesn't emit
-/// those classes for them) without guessing.
-pub async fn fetch_classes(
-    cfg: &Config,
-    http: &reqwest::Client,
-    cc: &CcClient<'_>,
-    cache: &TokenCache,
-    user_id: Uuid,
-    cc_org_id: &str,
-    label_name: &str,
-    metrics_id: &str,
-) -> anyhow::Result<Vec<String>> {
-    let token = tokens::ensure_token(cache, cc, user_id, cc_org_id).await?;
-    let script = find_classes_script(&token, label_name, metrics_id);
-    let value = execute_warpscript(http, &cfg.warp10_endpoint, &script).await?;
-    Ok(extract_classes(&value))
-}
