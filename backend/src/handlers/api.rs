@@ -5,7 +5,7 @@ use crate::api::{CcClient, SUBSCRIBED_EVENTS};
 use crate::auth::AuthenticatedUser;
 use crate::db::metric_readings::{self, MetricReading};
 use crate::db::monitors::{self, Monitor};
-use crate::db::orgs::{self, Org, OrgInput};
+use crate::db::orgs::{self, OrgInput};
 use crate::db::webhook_configs::{self, WebhookConfig};
 use crate::error::AppError;
 use crate::monitors::sync;
@@ -16,6 +16,7 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
+use futures::future::join_all;
 use rand::RngCore;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -226,10 +227,32 @@ async fn me(auth: AuthenticatedUser) -> Json<Me> {
     })
 }
 
+/// Org enriched with webhook ground truth fetched live from CC, plus the
+/// `last_received_at` from our local cache (so the UI can show "last event
+/// 3 min ago" on a hooked-up workshop without an extra round-trip).
+#[derive(Serialize)]
+struct OrgView {
+    id: Uuid,
+    user_id: Uuid,
+    cc_org_id: String,
+    name: Option<String>,
+    avatar_url: Option<String>,
+    refreshed_at: DateTime<Utc>,
+    /// Live ground truth: at least one webhook on the CC org points at our
+    /// `${PUBLIC_BASE_URL}/webhooks/cc/` prefix.
+    has_webhook: bool,
+    /// True when the live CC check errored for this org. The frontend renders
+    /// a small "?" affordance instead of guessing.
+    webhook_check_failed: bool,
+    /// From the local `webhook_configs` row, if any. Useful for "last event
+    /// X min ago" in the UI.
+    webhook_last_received_at: Option<DateTime<Utc>>,
+}
+
 async fn list_orgs(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
-) -> Result<Json<Vec<Org>>, AppError> {
+) -> Result<Json<Vec<OrgView>>, AppError> {
     let cc = CcClient::new(
         &state.http,
         &state.cfg,
@@ -251,7 +274,68 @@ async fn list_orgs(
         .collect();
 
     let orgs = orgs::replace_for_user(&state.pool, auth.id, &inputs).await?;
-    Ok(Json(orgs))
+
+    // Local cache view: webhook_configs rows the user already has. We use
+    // these for the optional `webhook_last_received_at` field; ground truth
+    // for `has_webhook` is the live CC call below.
+    let cached: HashMap<String, WebhookConfig> = webhook_configs::list_for_user(&state.pool, auth.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| (c.cc_org_id.clone(), c))
+        .collect();
+
+    // Live verification: parallel-fetch the webhook list on each CC org so
+    // the UI knows whether to render Hook up or Re-install. If a tenant is
+    // slow we still resolve as a batch — total wall-clock ≈ slowest single
+    // call, not the sum.
+    let our_prefix = format!(
+        "{}/webhooks/cc/",
+        state.cfg.public_base_url.trim_end_matches('/')
+    );
+    let checks = orgs.iter().map(|o| {
+        let cc = &cc;
+        let prefix = our_prefix.clone();
+        async move {
+            match cc.list_webhooks(&o.cc_org_id).await {
+                Ok(hooks) => {
+                    let has = hooks
+                        .iter()
+                        .any(|h| h.urls.iter().any(|u| u.url.starts_with(&prefix)));
+                    (true, has)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        cc_org_id = %o.cc_org_id,
+                        error = ?e,
+                        "list_webhooks failed during list_orgs; flagging webhook_check_failed"
+                    );
+                    (false, false)
+                }
+            }
+        }
+    });
+    let results = join_all(checks).await;
+
+    let views: Vec<OrgView> = orgs
+        .into_iter()
+        .zip(results)
+        .map(|(o, (ok, has_webhook))| OrgView {
+            id: o.id,
+            user_id: o.user_id,
+            cc_org_id: o.cc_org_id.clone(),
+            name: o.name,
+            avatar_url: o.avatar_url,
+            refreshed_at: o.refreshed_at,
+            has_webhook: if ok { has_webhook } else { false },
+            webhook_check_failed: !ok,
+            webhook_last_received_at: cached
+                .get(&o.cc_org_id)
+                .and_then(|c| c.last_received_at),
+        })
+        .collect();
+
+    Ok(Json(views))
 }
 
 async fn setup_webhook(

@@ -22,6 +22,15 @@ myccmonitor wears an industrial design language: a dark "atelier" canvas, rivete
 
 The vocabulary in this guide reflects what you see on screen. The terminology in the codebase keeps the technical names (monitor, group, rule, channel) — the metaphor is purely a UI veneer.
 
+## In-app documentation
+
+You can read this guide directly inside the app:
+
+- **From the control panel sidebar** when signed in — the **Documentation** entry under *Resources* opens the rendered guide in a new tab.
+- **From the Workshop entrance** (the public landing) — a small **Documentation** link sits at the top right of the page, also opens in a new tab.
+
+The in-app version is a Forge-skinned render of `docs/USER_GUIDE.md` (this file), refreshed at every deploy. The full developer-side reference stays on GitHub at [`docs/DEVELOPER_GUIDE.md`](https://github.com/fredericalix/myccmonitor/blob/main/docs/DEVELOPER_GUIDE.md).
+
 ## Signing in
 
 1. Open <https://myccmonitor-frontend.cleverapps.io>.
@@ -41,8 +50,13 @@ If sign-in fails with `OAuth callback is invalid`, the consumer rights are too n
 Each Clever Cloud organisation needs to send its events to myccmonitor.
 
 1. Go to **Workshops** (`/orgs`) — the first page after sign-in.
-2. For each workshop you want to monitor, click **Hook up**.
-3. The button is **idempotent**: clicking it again deletes any existing myccmonitor webhook on the org and creates a fresh one. Use **Re-install** if you suspect the hook is broken or the URL has changed.
+2. The page **automatically detects** whether each workshop already has a myccmonitor webhook configured by querying Clever Cloud live on every load. The button label and a small chip beside it tell you the state:
+   - **`Hook up`** + amber **Required** chip — no webhook is installed on CC for that workshop. Click it to install one.
+   - **`Re-install`** (no chip) — a webhook pointing at myccmonitor already exists. Click only if you suspect it's broken or want to rotate the secret.
+   - **`Hook up`** + grey **`?`** chip — the live verification call to CC failed (network blip, 5xx). Reload the page in a moment; meanwhile the button still works.
+3. The action is **idempotent** in either case: clicking it deletes any existing myccmonitor webhook on the org first and creates a fresh one. Safe to click twice.
+
+The `Enter` button (right side of the row) takes you to the workshop's **Control Room** and is the daily-use action — it's rendered as the prominent copper plate.
 
 Once installed, the webhook receives these events:
 
@@ -246,10 +260,18 @@ The Forge runs in a single locked dark theme. The previous light/warm pastel the
 
 ### "I clicked Hook up but events aren't arriving"
 
-1. Check the workshop's webhook in the Clever Cloud console — it should point at `https://myccmonitor-frontend.cleverapps.io/webhooks/cc/{token}` (a long random suffix).
-2. Click **Re-install** — it deletes the old hook and creates a fresh one (idempotent).
-3. Verify the OAuth consumer rights include `manage-organisations-applications`. If a CC error 6201 ("you are not allowed to access this organisation's applications") appears, the consumer is too narrow.
-4. Trigger a fake event (e.g. redeploy a tiny app). You should see the machine's LED change live within ~1 s.
+1. Reload `/orgs`. After a successful install the row should now show **Re-install** (no `Required` chip). If it still shows **Hook up** with the chip, the install didn't actually take — check the toast or browser console for the error.
+2. Check the workshop's webhook in the Clever Cloud console — it should point at `https://myccmonitor-frontend.cleverapps.io/webhooks/cc/{token}` (a long random suffix).
+3. Click **Re-install** — it deletes the old hook and creates a fresh one (idempotent).
+4. Verify the OAuth consumer rights include `manage-organisations-applications`. If a CC error 6201 ("you are not allowed to access this organisation's applications") appears, the consumer is too narrow.
+5. Trigger a fake event (e.g. redeploy a tiny app). You should see the machine's LED change live within ~1 s.
+
+### "The Workshops page shows a `?` chip on every workshop"
+
+The live CC verification call is failing for every org. Most likely:
+- Clever Cloud's API is having a hiccup — try again in a minute.
+- Your access token has expired or been revoked. Sign out from the user panel and sign in again.
+- Network egress is blocked for the backend container — check `clever logs --alias myccmonitor-backend` for the warning lines `list_webhooks failed during list_orgs`.
 
 ### "My blueprint isn't firing"
 

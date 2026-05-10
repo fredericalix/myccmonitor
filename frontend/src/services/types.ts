@@ -14,6 +14,12 @@ export interface Org {
   name: string | null;
   avatar_url: string | null;
   refreshed_at: string;
+  /** Live ground truth from CC: a webhook pointing at our prefix exists. */
+  has_webhook: boolean;
+  /** True when the backend couldn't reach CC to verify; the UI shows a "?". */
+  webhook_check_failed: boolean;
+  /** From our local cache; null if we've never received an event. */
+  webhook_last_received_at: string | null;
 }
 
 export type MonitorState = "ok" | "warning" | "critical" | "unknown";

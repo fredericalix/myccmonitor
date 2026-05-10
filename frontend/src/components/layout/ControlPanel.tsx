@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  BookOpenText,
   Buildings,
   Drop,
   Factory,
@@ -124,6 +125,16 @@ export function ControlPanel() {
             href="/channels"
             icon={<PaperPlaneTilt weight="duotone" size={16} />}
             label="Relay tower"
+          />
+        </nav>
+
+        <SectionLabel className="mt-6">Resources</SectionLabel>
+        <nav className="space-y-px">
+          <ControlPanelLink
+            href="/docs"
+            icon={<BookOpenText weight="duotone" size={16} />}
+            label="Documentation"
+            external
           />
         </nav>
 

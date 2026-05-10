@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
+  ArrowSquareOut,
+  BookOpenText,
   Factory,
   GearSix,
   Lightning,
@@ -51,10 +53,22 @@ export default function WorkshopEntrance() {
               myccmonitor
             </span>
           </span>
-          <span className="hidden sm:inline-flex items-center gap-2 text-[10px] uppercase tracking-[1.5px] text-[var(--forge-text-dim)] font-mono">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--copper-glow)] shadow-[0_0_6px_var(--copper-glow)]" />
-            Forge Mécanique
-          </span>
+          <div className="flex items-center gap-5">
+            <a
+              href="/docs"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[1px] text-[var(--forge-text-muted)] hover:text-[var(--forge-text-accent)] transition-colors"
+            >
+              <BookOpenText weight="duotone" size={14} />
+              Documentation
+              <ArrowSquareOut size={10} weight="bold" />
+            </a>
+            <span className="hidden sm:inline-flex items-center gap-2 text-[10px] uppercase tracking-[1.5px] text-[var(--forge-text-dim)] font-mono">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--copper-glow)] shadow-[0_0_6px_var(--copper-glow)]" />
+              Forge Mécanique
+            </span>
+          </div>
         </header>
 
         <section className="mt-24 flex-1 max-w-3xl">

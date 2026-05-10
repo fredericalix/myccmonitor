@@ -8,6 +8,8 @@ import {
   Factory,
   Plug,
   PlugsConnected,
+  Question,
+  Warning,
 } from "@phosphor-icons/react";
 import { api, ApiError } from "@/services/api";
 import type { Org } from "@/services/types";
@@ -23,7 +25,6 @@ export default function WorkshopsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [setupDone, setSetupDone] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     api
@@ -43,10 +44,24 @@ export default function WorkshopsPage() {
     setBusy(ccOrgId);
     try {
       await api.setupWebhook(ccOrgId);
-      setSetupDone((s) => ({ ...s, [ccOrgId]: true }));
+      // Optimistic: flip the local row so the chip + label update immediately,
+      // then refetch to pick up the authoritative CC view.
+      setOrgs((prev) =>
+        prev.map((o) =>
+          o.cc_org_id === ccOrgId
+            ? { ...o, has_webhook: true, webhook_check_failed: false }
+            : o,
+        ),
+      );
       toast.success("Webhook hook-up installed", {
         description: `Workshop ${ccOrgId} now relays events.`,
       });
+      api
+        .listOrgs()
+        .then(setOrgs)
+        .catch(() => {
+          /* keep the optimistic view; next page load will reconcile */
+        });
     } catch (err: unknown) {
       toast.error("Webhook setup failed", {
         description: err instanceof Error ? err.message : String(err),
@@ -88,7 +103,8 @@ export default function WorkshopsPage() {
       ) : (
         <ul className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {orgs.map((o) => {
-            const ok = setupDone[o.cc_org_id];
+            const hasWebhook = o.has_webhook === true;
+            const checkFailed = o.webhook_check_failed === true;
             return (
               <li key={o.cc_org_id}>
                 <MachineCard className="p-4 h-full flex flex-col gap-3 hover:-translate-y-0.5 hover:brightness-110 transition-[transform,filter] duration-150">
@@ -108,12 +124,12 @@ export default function WorkshopsPage() {
                   </p>
                   <div className="mt-auto flex items-center gap-2 flex-wrap">
                     <RiveterButton
-                      variant={ok ? "default" : "primary"}
+                      variant="default"
                       size="sm"
                       onClick={() => setupWebhook(o.cc_org_id)}
                       disabled={busy === o.cc_org_id}
                     >
-                      {ok ? (
+                      {hasWebhook ? (
                         <>
                           <PlugsConnected weight="bold" size={12} />
                           Re-install
@@ -125,11 +141,29 @@ export default function WorkshopsPage() {
                         </>
                       )}
                     </RiveterButton>
+                    {!hasWebhook && !checkFailed ? (
+                      <span
+                        title="No webhook installed yet — events won't reach the bus until you hook this workshop up."
+                        className="inline-flex items-center gap-1 rounded-[3px] border border-[var(--led-warn)]/60 bg-[var(--led-warn)]/12 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.5px] text-[var(--led-warn)] font-mono"
+                      >
+                        <Warning weight="fill" size={11} />
+                        Required
+                      </span>
+                    ) : null}
+                    {checkFailed ? (
+                      <span
+                        title="Couldn't reach Clever Cloud to verify the webhook state — try again in a moment."
+                        className="inline-flex items-center gap-1 rounded-[3px] border border-[var(--forge-rim-dim)] bg-[var(--forge-floor-deep)]/60 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.5px] text-[var(--forge-text-muted)] font-mono"
+                      >
+                        <Question weight="bold" size={11} />
+                        ?
+                      </span>
+                    ) : null}
                     <Link
                       href={`/orgs/${encodeURIComponent(o.cc_org_id)}`}
                       className="ml-auto"
                     >
-                      <RiveterButton variant="ghost" size="sm">
+                      <RiveterButton variant="primary" size="sm">
                         Enter
                         <ArrowRight weight="bold" size={12} />
                       </RiveterButton>

@@ -10,6 +10,9 @@ frontend/out/
 frontend/.turbo/
 frontend/next-env.d.ts
 
+# Build-time copy of root /docs/*.md — refreshed by frontend/scripts/copy-docs.mjs
+frontend/src/_docs/
+
 # Env / secrets
 .env
 .env.local
