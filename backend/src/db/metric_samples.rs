@@ -14,6 +14,16 @@ pub struct MetricSample {
     pub net_out: Option<f64>,
 }
 
+/// Insert a new metric sample with **carry-forward**: any metric that arrives
+/// `NULL` is filled in with the most recent non-null value from the previous
+/// 30 min for that monitor. CC's Warp10 emits `disk.used_percent` at a
+/// slower cadence (~5 min) than cpu/mem/net (~1 min), so without
+/// carry-forward the disk bar would flicker between real values and `n/a`
+/// every poll. The 30 min window prevents stale data from lingering forever
+/// if a metric stops being emitted entirely.
+///
+/// Returns the row as actually stored, so callers (the poller) can use the
+/// post-carry-forward values for WS broadcasts.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
     pool: &PgPool,
@@ -24,17 +34,45 @@ pub async fn insert(
     disk: Option<f64>,
     net_in: Option<f64>,
     net_out: Option<f64>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<MetricSample, sqlx::Error> {
+    sqlx::query_as::<_, MetricSample>(
         r#"
         INSERT INTO metric_samples (monitor_id, ts, cpu, mem, disk, net_in, net_out)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES (
+            $1, $2,
+            COALESCE($3, (
+                SELECT cpu FROM metric_samples
+                WHERE monitor_id = $1 AND cpu IS NOT NULL AND ts >= $2 - INTERVAL '30 minutes'
+                ORDER BY ts DESC LIMIT 1
+            )),
+            COALESCE($4, (
+                SELECT mem FROM metric_samples
+                WHERE monitor_id = $1 AND mem IS NOT NULL AND ts >= $2 - INTERVAL '30 minutes'
+                ORDER BY ts DESC LIMIT 1
+            )),
+            COALESCE($5, (
+                SELECT disk FROM metric_samples
+                WHERE monitor_id = $1 AND disk IS NOT NULL AND ts >= $2 - INTERVAL '30 minutes'
+                ORDER BY ts DESC LIMIT 1
+            )),
+            COALESCE($6, (
+                SELECT net_in FROM metric_samples
+                WHERE monitor_id = $1 AND net_in IS NOT NULL AND ts >= $2 - INTERVAL '30 minutes'
+                ORDER BY ts DESC LIMIT 1
+            )),
+            COALESCE($7, (
+                SELECT net_out FROM metric_samples
+                WHERE monitor_id = $1 AND net_out IS NOT NULL AND ts >= $2 - INTERVAL '30 minutes'
+                ORDER BY ts DESC LIMIT 1
+            ))
+        )
         ON CONFLICT (monitor_id, ts) DO UPDATE
         SET cpu = COALESCE(EXCLUDED.cpu, metric_samples.cpu),
             mem = COALESCE(EXCLUDED.mem, metric_samples.mem),
             disk = COALESCE(EXCLUDED.disk, metric_samples.disk),
             net_in = COALESCE(EXCLUDED.net_in, metric_samples.net_in),
             net_out = COALESCE(EXCLUDED.net_out, metric_samples.net_out)
+        RETURNING monitor_id, ts, cpu, mem, disk, net_in, net_out
         "#,
     )
     .bind(monitor_id)
@@ -44,9 +82,8 @@ pub async fn insert(
     .bind(disk)
     .bind(net_in)
     .bind(net_out)
-    .execute(pool)
-    .await?;
-    Ok(())
+    .fetch_one(pool)
+    .await
 }
 
 pub async fn latest(

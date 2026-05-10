@@ -350,31 +350,48 @@ async fn write_sample(
     let disk_d = disk.map(|v| v as f64);
     let net_in_d = net_in.map(|v| v as f64);
     let net_out_d = net_out.map(|v| v as f64);
-    let any_metric =
+    let fresh_metric =
         cpu_d.is_some() || mem_d.is_some() || disk_d.is_some() || net_in_d.is_some() || net_out_d.is_some();
 
-    if let Err(e) = db::metric_samples::insert(
+    // metric_samples::insert applies carry-forward (last non-null in the
+    // last 30 min) for any field that came back null this poll. The returned
+    // row has the post-carry-forward values, which we use for the WS frame
+    // so disk stays visible between its slow-cadence samples.
+    let stored = match db::metric_samples::insert(
         pool, monitor.id, ts, cpu_d, mem_d, disk_d, net_in_d, net_out_d,
     )
     .await
     {
-        tracing::warn!(error = ?e, monitor_id = %monitor.id, "insert metric_sample failed");
-    }
+        Ok(row) => Some(row),
+        Err(e) => {
+            tracing::warn!(error = ?e, monitor_id = %monitor.id, "insert metric_sample failed");
+            None
+        }
+    };
     if let Err(e) = bump_last_poll(pool, monitor.id).await {
         tracing::warn!(error = ?e, monitor_id = %monitor.id, "bump last_poll_at failed");
     }
-    if any_metric {
+    let (b_cpu, b_mem, b_disk, b_net_in, b_net_out) = match stored.as_ref() {
+        Some(s) => (s.cpu, s.mem, s.disk, s.net_in, s.net_out),
+        None => (cpu_d, mem_d, disk_d, net_in_d, net_out_d),
+    };
+    let any_to_broadcast = b_cpu.is_some()
+        || b_mem.is_some()
+        || b_disk.is_some()
+        || b_net_in.is_some()
+        || b_net_out.is_some();
+    if any_to_broadcast {
         if let Err(e) = ws::broadcast_via_pg(
             pool,
             cc_org_id,
             WsFrame::MetricsSnapshot {
                 monitor_id: monitor.id,
                 ts,
-                cpu: cpu_d,
-                mem: mem_d,
-                disk: disk_d,
-                net_in: net_in_d,
-                net_out: net_out_d,
+                cpu: b_cpu,
+                mem: b_mem,
+                disk: b_disk,
+                net_in: b_net_in,
+                net_out: b_net_out,
             },
         )
         .await
@@ -388,8 +405,10 @@ async fn write_sample(
     }
 
     // Fire dependent rules so threshold conditions on cpu/mem are evaluated
-    // every poll cycle. Best-effort outside the lock.
-    if any_metric {
+    // every poll cycle. Best-effort outside the lock. Trigger only when the
+    // current poll actually produced new data (not on carry-forward only) —
+    // rules read live monitor state, not historical values.
+    if fresh_metric {
         if let Err(e) = trigger_for_monitor(
             state,
             user_id,
