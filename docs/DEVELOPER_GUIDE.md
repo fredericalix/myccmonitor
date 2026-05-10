@@ -21,7 +21,7 @@ myccmonitor is a multi-tenant supervision tool for Clever Cloud applications and
 
 **Backend** — Rust 1.85+ (edition 2024), Axum 0.8, Tokio, sqlx 0.8 (Postgres), tower-sessions 0.14 + tower-sessions-sqlx-store, aes-gcm 0.10, reqwest 0.12, lettre 0.11 (SMTP), `pulsar` 6.x (`pulsar-rs`, requires `protoc` at build time), `petgraph` 0.6 (cycle detection), `handlebars` 6 (notification templating), `tracing`.
 
-**Frontend** — Next.js **16** (app router; **breaking changes from Next 15** — read `frontend/AGENTS.md` and `frontend/node_modules/next/dist/docs/` before writing Next-specific code), TypeScript 5, React 19.2, Zustand 5, **Tailwind CSS v4** (CSS-only theme via `@theme` in `frontend/src/app/globals.css`), hand-rolled UI primitives (no shadcn), `@phosphor-icons/react`, `sonner`, ReactFlow 11 + Dagre.
+**Frontend** — Next.js **16** (app router; **breaking changes from Next 15** — read `frontend/AGENTS.md` and `frontend/node_modules/next/dist/docs/` before writing Next-specific code), TypeScript 5, React 19.2, Zustand 5, **Tailwind CSS v4** (CSS-only theme via `@theme` in `frontend/src/app/globals.css`), hand-rolled UI primitives (no shadcn), `@phosphor-icons/react`, `sonner`, ReactFlow 11 + Dagre. The visual system is **Forge Mécanique** — a locked dark industrial palette (burnt leather, copper, riveted steel, glowing LEDs); the previous warm-pastel light/dark theme pair has been retired. See §17 below.
 
 **Infra** — Postgres (data + sessions + LISTEN/NOTIFY + advisory locks), Apache Pulsar (durable webhook inbox + 30-day audit retention + delayed messages for rule escalations), Clever Cloud as deploy target.
 
@@ -66,18 +66,24 @@ myccmonitor/
 │   ├── next.config.ts              proxies /auth /api /ws /webhooks to backend
 │   └── src/
 │       ├── app/
-│       │   ├── page.tsx            public landing
-│       │   ├── layout.tsx          Geist Mono + Inter Tight + Instrument Serif fonts; theme bootstrap
+│       │   ├── page.tsx            Workshop entrance (public landing)
+│       │   ├── layout.tsx          Geist Mono + Inter Tight + Instrument Serif fonts; dark-only
+│       │   ├── globals.css         Forge tokens (--forge-*, --led-*, --copper-glow), animations
 │       │   └── (app)/              authenticated routes share AppShell
 │       │       ├── layout.tsx      AppShell + Toaster
-│       │       ├── orgs/, orgs/[ccOrgId]/
-│       │       ├── groups/, groups/[id]/
-│       │       ├── rules/, rules/new/, rules/[id]/
-│       │       └── channels/
+│       │       ├── orgs/, orgs/[ccOrgId]/      Workshops list, Control Room
+│       │       ├── groups/, groups/[id]/       Production Lines list, detail
+│       │       ├── rules/, rules/new/, rules/[id]/  Blueprint Library + editor
+│       │       └── channels/                   Relay tower
 │       ├── components/
-│       │   ├── ui/                 hand-rolled primitives (Button, Card, Dialog, …)
-│       │   ├── layout/             AppShell, Sidebar, ThemeToggle, PageHeader, WSIndicator
-│       │   └── RuleEditor/         ReactFlow canvas + Nodes/* + DebugPanel
+│       │   ├── ui/                 generic primitives (Button, Card, Dialog, Skeleton, …)
+│       │   ├── forge/              Forge primitives (see §17): LedIndicator,
+│       │   │                       MachineCard, MachineUnit, MachineGauge, Sector,
+│       │   │                       WSPill, RiveterButton, Antenna, SignalBars,
+│       │   │                       RolledStateReactor, Conveyor, BlueprintCard
+│       │   ├── layout/             AppShell, ControlPanel, ControlPanelLink, PageHeader
+│       │   └── RuleEditor/         ReactFlow canvas + Nodes/* + DebugPanel (legacy nodes;
+│       │                           Forge re-skin pending — see §18 deferred work)
 │       ├── hooks/useOrgWebSocket.ts  auto-reconnecting WS hook with exposed connection state
 │       ├── services/api.ts           typed fetch wrapper
 │       └── lib/cn.ts                 clsx + tailwind-merge helper
@@ -403,11 +409,11 @@ Single-origin: the frontend rewrites `/auth/*`, `/api/*`, `/ws`, and `/webhooks/
 **Deploy**
 
 ```bash
-clever deploy --alias backend
-clever deploy --alias frontend
+clever deploy --alias myccmonitor-backend     # only when backend/ changed
+clever deploy --alias myccmonitor-frontend    # only when frontend/ changed
 ```
 
-Each deploy pushes the current `main` HEAD to the matching CC remote (`backend` and `frontend` are pre-configured git remotes). `clever activity --alias <name>` shows the last deploys with status; `clever logs --alias <name>` tails the running instance(s).
+Each deploy pushes the current branch's HEAD to the matching CC remote (`myccmonitor-backend` and `myccmonitor-frontend` are pre-configured git remotes — see `.clever.json` in the repo root). `clever activity --alias <name>` shows the last deploys with status; `clever logs --alias <name>` tails the running instance(s). The frontend re-skin in late 2026 was a frontend-only change — backend stayed pinned to the prior `main`, only the frontend redeployed.
 
 **Gotchas in the build pipeline** (also in [CLAUDE.md §18.b](../CLAUDE.md#18b-gotchas-surfaced-during-the-build-read-this-before-debugging)):
 
@@ -530,6 +536,63 @@ SELECT pid, query FROM pg_stat_activity WHERE query LIKE '%LISTEN%';
 ```
 
 **Integration testing.** Most of the stack is exercised end-to-end by running the full docker-compose + a CC dev OAuth consumer + a real CC org. Unit tests live next to the code they test (`#[cfg(test)] mod tests`); coverage is currently sparse and is expected to grow with each new feature.
+
+## 17. Forge Mécanique design system
+
+The frontend is built around an industrial metaphor: monitored apps are "machines" on the floor, groups are "production lines" with reactors and conveyors, channels are "transmitters" in a "relay tower", rules are "blueprints" in a "library". The vocabulary is purely UI; the underlying types and APIs keep the technical names (monitor, group, rule, channel).
+
+**Tokens** (`frontend/src/app/globals.css`). All Forge-native CSS custom properties live on `:root` — no `.dark` selector, no `prefers-color-scheme` switch. The legacy warm tokens (`--color-bg`, `--color-text`, …) are aliased to Forge values so any unmigrated component still renders coherently:
+
+| Token | Use |
+| --- | --- |
+| `--forge-floor`, `--forge-floor-alt`, `--forge-floor-deep` | App background base + 45° hatch alternation + deepest sink |
+| `--forge-machine-top` / `-bottom`, `--forge-machine-action-*`, `--forge-machine-logic-*` | Machine body gradients (default / destructive / logic gate) |
+| `--forge-rim`, `--forge-rim-bright`, `--forge-rim-dim` | Riveted-metal borders |
+| `--forge-text`, `--forge-text-accent`, `--forge-text-muted`, `--forge-text-dim` | Text scale (cream / cuivre clair / cuivre / dim copper) |
+| `--copper-glow`, `--copper-glow-strong`, `--copper-glow-soft` | Pipe flow, focus rings, accent highlights |
+| `--led-ok`, `--led-warn`, `--led-crit`, `--led-dim` | Severity-coded LED colours |
+
+`--shadow-rivet` (and `--shadow-rivet-bright`) is the canonical raised-surface shadow — inset highlight + outset drop shadow, applied via the `surface-rivet` utility class.
+
+**Animations** (CSS-only, all gated by `prefers-reduced-motion`):
+- `led-pulse-warn` (1.5 s) and `led-pulse-crit` (0.5 s) — used by `LedIndicator`.
+- `forge-spark` — copper glow pulse on a card when a fresh WebSocket frame lands.
+- `pipe-flow` — `stroke-dasharray` defile on a parallel line for the rule editor's pipe edges (planned).
+- `conveyor-slide` — translateX gradient loop for `Conveyor` segments on the production-line page.
+- `forge-shimmer` — copper-tinted skeleton shimmer.
+
+**Backgrounds**:
+- `bg-forge-hatch` — repeating 45° leather hatch (used on the body).
+- `bg-forge-blueprint` — radial-dot 22 × 22 grid (used on the assembly area + ReactFlow canvas).
+- `bg-forge-panel`, `bg-forge-machine`, `bg-forge-machine-action`, `bg-forge-machine-logic` — surface gradients.
+
+**Typography**:
+- **Sans** Inter Tight (body, UI).
+- **Display** Instrument Serif (page titles, machine names — gives a hand-engraved feel against metal). Italic variant used for the "Control Room" / "Production line" / "Relay tower" / "Blueprint library" subtitles.
+- **Mono** Geist Mono (gauge readouts, IDs, formulas, footers).
+
+**Forge primitives** (`frontend/src/components/forge/`):
+
+| Component | Purpose |
+| --- | --- |
+| `LedIndicator` | Severity-driven animated LED dot. Sizes xs/sm/md/lg. Pulses at 1.5 s for warn, 0.5 s for crit, static otherwise. |
+| `MachineCard` (+ `MachineLabel`) | Riveted-metal surface primitive. Variants: `default`, `action` (red-rim destructive), `logic` (cooler tone for AND/OR gates). Used by every form, every machine-style row. |
+| `MachineUnit` | The dashboard's monitor card. Wraps a `MachineCard` with LED head + serif name + kind tag + 3 `MachineGauge`s + NET line + "Bug" diagnostic trigger. Sparks on fresh frames. |
+| `MachineGauge` | Forge-skinned bar with copper-to-red gradient by severity. Supports `loading` / `na` / `data` / `no-data` states (drives the n/a-vs-shimmer logic in the dashboard). |
+| `Sector` | Section heading with copper-fade horizontal divider + count chip; used to title sectors of the Control Room and any other grid. |
+| `WSPill` | Inline pill that shows the WebSocket bus state (Bus live / Connecting / Reconnecting / Bus offline) with a severity-mapped LED. Replaces the legacy `WebSocketIndicator`. Reads from sessionStorage when no `state` prop is passed (lets per-org pages broadcast their state up to the shell). |
+| `RiveterButton` | Brass-plate styled button with `default` / `primary` / `danger` / `ghost` variants and `sm/md/lg` sizes. Replaces the legacy `Button` for Forge surfaces. |
+| `Antenna` | Copper-bordered icon plate for channel kinds (Slack / Email / Discord / generic). |
+| `SignalBars` | 5-bar signal indicator that maps `failure_count` + recent-success state to colour and strength. |
+| `RolledStateReactor` | Big circular reactor showing a group's rolled-up state with severity-driven pulse and a dashed inner halo. Used as the centrepiece on `/groups/[id]`. |
+| `Conveyor` | Animated belt segment (`bg-image` translateX-loop at 1 s). Place between two stations on the assembly line. |
+| `BlueprintCard` | Folded paper-on-metal card with corner crease and a faint copper graph-paper grid, used by the Blueprint Library row list. |
+
+**Common chrome**:
+- The control-panel sidebar (`components/layout/ControlPanel.tsx`) carries a riveted dotted strip on its right edge, the factory brand at the top, panel-link styling with a copper accent border on the active item, and the `WSPill` in its "Bus" section.
+- Page headers (`components/layout/PageHeader.tsx`) keep the same component shape as before, with the title rendered in Instrument Serif italic + copper accent for the page-archetype label ("Control Room", "Production line", "Blueprint library", …).
+
+**Migration note.** The rule editor (`/rules/new`, `/rules/[id]`) is the deepest re-skin and stayed in legacy form during the late-2026 redesign — see [the saved plan](../../.claude/plans/faisons-un-petit-brainstorming-golden-balloon.md) for the planned Forge Floor (4 ReactFlow node types rebuilt as Sensor / LogicGate / Actuator / RuleOutput, `PipeEdge` with flow animation, `PaletteSidebar`, right `Inspector`, `Combobox`, `DurationPicker`, `LiveReadout`, `InlineErrorChip`, drag-from-palette, `graphToRule` returning `Result`, client-side leaf evaluator). That work is queued; the chrome around the editor (toolbar, page header, save/dry-run/debug buttons) is already Forge-aware.
 
 ---
 
