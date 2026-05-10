@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { CloudArrowDown, Globe, Sparkle } from "@phosphor-icons/react";
+import { CloudArrowDown, Cube, Globe, Sparkle } from "@phosphor-icons/react";
 import { api, ApiError } from "@/services/api";
 import type {
   MetricSnapshot,
@@ -10,28 +10,38 @@ import type {
   MonitorState,
   WsFrame,
 } from "@/services/types";
-import { MonitorCard } from "@/components/MonitorCard";
+import { MachineUnit } from "@/components/forge/MachineUnit";
+import { Sector } from "@/components/forge/Sector";
+import { WSPill, publishWsState } from "@/components/forge/WSPill";
 import { useOrgWebSocket } from "@/hooks/useOrgWebSocket";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Card } from "@/components/ui/Card";
-import {
-  WebSocketIndicator,
-  publishWsState,
-} from "@/components/layout/WebSocketIndicator";
+import { MachineCard } from "@/components/forge/MachineCard";
 
 const SECTIONS: {
   key: "cc_application" | "cc_addon" | "synthetic";
   label: string;
   icon: React.ReactNode;
 }[] = [
-  { key: "cc_application", label: "Applications", icon: <Globe weight="duotone" size={16} /> },
-  { key: "cc_addon", label: "Add-ons", icon: <CloudArrowDown weight="duotone" size={16} /> },
-  { key: "synthetic", label: "Synthetic monitors", icon: <Sparkle weight="duotone" size={16} /> },
+  {
+    key: "cc_application",
+    label: "Sector A · Applications",
+    icon: <Globe weight="duotone" size={14} />,
+  },
+  {
+    key: "cc_addon",
+    label: "Sector B · Add-ons",
+    icon: <CloudArrowDown weight="duotone" size={14} />,
+  },
+  {
+    key: "synthetic",
+    label: "Sector S · Synthetic",
+    icon: <Sparkle weight="duotone" size={14} />,
+  },
 ];
 
-export default function OrgDashboard() {
+export default function ControlRoom() {
   const params = useParams<{ ccOrgId: string }>();
   const ccOrgId = decodeURIComponent(params.ccOrgId);
 
@@ -45,8 +55,6 @@ export default function OrgDashboard() {
     let active = true;
     Promise.all([
       api.listMonitors(ccOrgId),
-      // Snapshots are best-effort: if the endpoint 404s (older backend) or
-      // fails for any other reason, we degrade to WS-only hydration.
       api.listSnapshots(ccOrgId).catch((err) => {
         console.warn("listSnapshots failed; falling back to WS hydration", err);
         return [];
@@ -134,17 +142,53 @@ export default function OrgDashboard() {
     return out;
   }, [monitors]);
 
+  const totalsByState = useMemo(() => {
+    const t = { ok: 0, warning: 0, critical: 0, unknown: 0 };
+    for (const m of monitors) t[m.current_state]++;
+    return t;
+  }, [monitors]);
+
   return (
     <>
       <PageHeader
-        title={ccOrgId}
-        description={`${monitors.length} monitor${monitors.length === 1 ? "" : "s"} in this organisation. State updates stream live over WebSocket.`}
+        title={
+          <span>
+            <span className="text-[var(--forge-text)]">{ccOrgId}</span>{" "}
+            <span className="text-[var(--forge-text-dim)]">·</span>{" "}
+            <span className="font-serif italic text-[var(--forge-text-accent)]">
+              Control Room
+            </span>
+          </span>
+        }
+        description={`${monitors.length} machine${monitors.length === 1 ? "" : "s"} on the floor. Frames stream live over the bus.`}
         breadcrumbs={[
-          { label: "Organisations", href: "/orgs" },
+          { label: "Workshops", href: "/orgs" },
           { label: ccOrgId },
         ]}
-        badge={<WebSocketIndicator state={wsState} />}
+        badge={<WSPill state={wsState} />}
       />
+
+      {/* Live floor totals */}
+      {!loading && monitors.length > 0 ? (
+        <div className="mb-6 flex flex-wrap gap-2 text-[11px] font-mono">
+          <FloorChip label="OK" count={totalsByState.ok} dotColor="var(--led-ok)" />
+          <FloorChip
+            label="WARN"
+            count={totalsByState.warning}
+            dotColor="var(--led-warn)"
+          />
+          <FloorChip
+            label="CRIT"
+            count={totalsByState.critical}
+            dotColor="var(--led-crit)"
+          />
+          <FloorChip
+            label="UNKNOWN"
+            count={totalsByState.unknown}
+            dotColor="var(--led-dim)"
+          />
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -153,35 +197,36 @@ export default function OrgDashboard() {
           ))}
         </div>
       ) : error ? (
-        <Card className="p-5 border-critical/30 bg-critical-soft">
-          <p className="text-sm text-critical">
-            {error}. If the org is missing a webhook, click{" "}
-            <span className="italic">Setup webhook</span> from the orgs list.
+        <MachineCard variant="action" className="p-4">
+          <p className="text-[12px] text-[var(--forge-text)]">
+            {error}. If the workshop is missing a webhook hook-up, click{" "}
+            <span className="italic text-[var(--forge-text-accent)]">
+              Setup webhook
+            </span>{" "}
+            from the Workshops page.
           </p>
-        </Card>
+        </MachineCard>
       ) : monitors.length === 0 ? (
         <EmptyState
-          icon={<Globe weight="duotone" size={28} />}
-          title="No monitors yet"
+          icon={<Cube weight="duotone" size={28} />}
+          title="No machines yet"
           description="Apps and addons appear here once they're synced from Clever Cloud or when CC fires its first webhook."
         />
       ) : (
-        <div className="space-y-10">
+        <div className="space-y-8">
           {SECTIONS.map(({ key, label, icon }) => {
             const list = grouped[key] ?? [];
             if (list.length === 0) return null;
             return (
-              <section key={key}>
-                <h2 className="mb-4 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
-                  <span className="text-accent-strong">{icon}</span>
-                  {label}
-                  <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-bold text-accent-strong">
-                    {list.length}
-                  </span>
-                </h2>
+              <Sector
+                key={key}
+                label={label}
+                icon={icon}
+                count={list.length}
+              >
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {list.map((m) => (
-                    <MonitorCard
+                    <MachineUnit
                       key={m.id}
                       monitor={m}
                       metrics={metrics[m.id]}
@@ -189,11 +234,41 @@ export default function OrgDashboard() {
                     />
                   ))}
                 </div>
-              </section>
+              </Sector>
             );
           })}
         </div>
       )}
     </>
+  );
+}
+
+function FloorChip({
+  label,
+  count,
+  dotColor,
+}: {
+  label: string;
+  count: number;
+  dotColor: string;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-[3px] border border-[var(--forge-rim-dim)] bg-[var(--forge-floor-deep)]/70 px-2 py-1 ${
+        count === 0 ? "opacity-50" : ""
+      }`}
+    >
+      <span
+        className="inline-block h-2 w-2 rounded-full"
+        style={{
+          background: dotColor,
+          boxShadow: count > 0 ? `0 0 6px ${dotColor}` : "none",
+        }}
+      />
+      <span className="uppercase tracking-[0.5px] text-[var(--forge-text-muted)]">
+        {label}
+      </span>
+      <span className="tabular-nums text-[var(--forge-text)]">{count}</span>
+    </span>
   );
 }

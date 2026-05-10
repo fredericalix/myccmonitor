@@ -1,75 +1,88 @@
 @import "tailwindcss";
 
 /* ──────────────────────────────────────────────────────────────────────
-   Soft pastel friendly (light) — peach / honey / chocolate text.
-   Dark warm — espresso / cream / orange.
-   Tokens are exposed via Tailwind v4's @theme so utilities like
-   bg-bg, bg-surface, text-text, ring-accent, etc. work everywhere.
+   Forge Mécanique — locked dark industrial theme.
+   Burnt leather, copper, riveted steel, glowing LEDs.
+   No light variant. Tokens are exposed via Tailwind v4's @theme so
+   existing utilities (bg-bg, text-text, ring-accent, …) continue to work
+   while components migrate to the Forge primitives.
    ────────────────────────────────────────────────────────────────────── */
 
 :root {
-  --color-bg: #fff8ee;
-  --color-surface: #fffaf0;
-  --color-elevated: #ffffff;
+  /* Forge-native palette — these are the source of truth. */
+  --forge-floor: #1f1208;
+  --forge-floor-alt: #2a1810;
+  --forge-floor-deep: #1a0e06;
+  --forge-panel-top: #2a1810;
+  --forge-panel-bottom: #1a0e06;
+  --forge-machine-top: #5a3a22;
+  --forge-machine-bottom: #3a2412;
+  --forge-machine-action-top: #6b3a2b;
+  --forge-machine-action-bottom: #4a2520;
+  --forge-machine-logic-top: #4a3825;
+  --forge-machine-logic-bottom: #2a1d10;
+  --forge-rim: #8b5a2b;
+  --forge-rim-bright: #c8895b;
+  --forge-rim-dim: #6b4422;
+  --forge-text: #ffe8cc;
+  --forge-text-accent: #ffd08a;
+  --forge-text-muted: #c8895b;
+  --forge-text-dim: #8b5a2b;
+  --copper-glow: #f59e47;
+  --copper-glow-strong: #ffb35e;
+  --copper-glow-soft: rgba(245, 158, 71, 0.18);
 
-  --color-border: #f4e4c7;
-  --color-border-strong: #e8c896;
+  --led-ok: #22c55e;
+  --led-warn: #f59e0b;
+  --led-crit: #ef4444;
+  --led-dim: #6b5b4a;
 
-  --color-text: #4a2e1a;
-  --color-text-muted: #8b6f47;
-  --color-text-subtle: #b59b7a;
+  --forge-hatch: repeating-linear-gradient(
+    45deg,
+    var(--forge-floor) 0 4px,
+    var(--forge-floor-alt) 4px 8px
+  );
+  --forge-blueprint: radial-gradient(
+      circle,
+      rgba(245, 158, 71, 0.06) 1px,
+      transparent 1px
+    )
+    0 0 / 22px 22px;
 
-  --color-accent: #f59e47;
-  --color-accent-strong: #e8852e;
-  --color-accent-soft: #ffe0b3;
-  --color-accent-on: #4a2e1a;
+  /* Aliased to the Forge palette so legacy utilities keep rendering. */
+  --color-bg: var(--forge-floor);
+  --color-surface: var(--forge-floor-alt);
+  --color-elevated: var(--forge-machine-bottom);
 
-  --color-ok: #65a30d;
-  --color-ok-soft: #ecfccb;
-  --color-warning: #d97706;
-  --color-warning-soft: #fef3c7;
-  --color-critical: #c2410c;
-  --color-critical-soft: #ffe4d6;
-  --color-unknown: #a8907a;
-  --color-unknown-soft: #ede0d0;
+  --color-border: var(--forge-rim-dim);
+  --color-border-strong: var(--forge-rim);
 
-  --shadow-sm: 0 1px 2px rgba(74, 46, 26, 0.05),
-    0 1px 1px rgba(74, 46, 26, 0.03);
-  --shadow-md: 0 1px 2px rgba(74, 46, 26, 0.05),
-    0 4px 12px rgba(74, 46, 26, 0.07);
-  --shadow-lg: 0 8px 24px rgba(74, 46, 26, 0.09),
-    0 2px 6px rgba(74, 46, 26, 0.06);
-}
+  --color-text: var(--forge-text);
+  --color-text-muted: var(--forge-text-muted);
+  --color-text-subtle: var(--forge-text-dim);
 
-.dark {
-  --color-bg: #1a0f08;
-  --color-surface: #2a1f18;
-  --color-elevated: #3a2d24;
+  --color-accent: var(--copper-glow);
+  --color-accent-strong: var(--forge-text-accent);
+  --color-accent-soft: var(--copper-glow-soft);
+  --color-accent-on: var(--forge-floor);
 
-  --color-border: #4a3a2e;
-  --color-border-strong: #6b5440;
+  --color-ok: var(--led-ok);
+  --color-ok-soft: rgba(34, 197, 94, 0.16);
+  --color-warning: var(--led-warn);
+  --color-warning-soft: rgba(245, 158, 11, 0.16);
+  --color-critical: var(--led-crit);
+  --color-critical-soft: rgba(239, 68, 68, 0.16);
+  --color-unknown: var(--led-dim);
+  --color-unknown-soft: rgba(107, 91, 74, 0.18);
 
-  --color-text: #ffe8cc;
-  --color-text-muted: #c9a77f;
-  --color-text-subtle: #8b6f47;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
 
-  --color-accent: #ffa94d;
-  --color-accent-strong: #ffb766;
-  --color-accent-soft: rgba(255, 169, 77, 0.18);
-  --color-accent-on: #1a0f08;
-
-  --color-ok: #a3e635;
-  --color-ok-soft: rgba(163, 230, 53, 0.16);
-  --color-warning: #fbbf24;
-  --color-warning-soft: rgba(251, 191, 36, 0.16);
-  --color-critical: #fb7185;
-  --color-critical-soft: rgba(251, 113, 133, 0.18);
-  --color-unknown: #a8907a;
-  --color-unknown-soft: rgba(168, 144, 122, 0.18);
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-rivet: inset 0 1px 0 rgba(255, 200, 130, 0.2),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.55);
+  --shadow-rivet-bright: inset 0 1px 0 rgba(255, 220, 180, 0.32),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.65);
 }
 
 @theme inline {
@@ -98,22 +111,36 @@
   --color-unknown: var(--color-unknown);
   --color-unknown-soft: var(--color-unknown-soft);
 
+  --color-forge-rim: var(--forge-rim);
+  --color-forge-rim-bright: var(--forge-rim-bright);
+  --color-forge-rim-dim: var(--forge-rim-dim);
+  --color-forge-text-accent: var(--forge-text-accent);
+  --color-copper: var(--copper-glow);
+  --color-copper-strong: var(--copper-glow-strong);
+  --color-led-ok: var(--led-ok);
+  --color-led-warn: var(--led-warn);
+  --color-led-crit: var(--led-crit);
+  --color-led-dim: var(--led-dim);
+
   --font-sans: var(--font-inter-tight);
   --font-serif: var(--font-instrument-serif);
   --font-mono: var(--font-geist-mono);
 
-  --radius-xs: 6px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 24px;
-  --radius-2xl: 32px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
 }
 
 @layer base {
   html,
   body {
-    background: var(--color-bg);
+    background:
+      radial-gradient(ellipse at top, rgba(245, 158, 71, 0.04), transparent 60%),
+      var(--forge-hatch);
+    background-attachment: fixed;
     color: var(--color-text);
   }
   body {
@@ -127,13 +154,13 @@
     border-color: var(--color-border);
   }
   *:focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: 2px solid var(--copper-glow);
     outline-offset: 2px;
     border-radius: 4px;
   }
   ::selection {
-    background: var(--color-accent-soft);
-    color: var(--color-text);
+    background: var(--copper-glow-soft);
+    color: var(--forge-text-accent);
   }
 }
 
@@ -146,13 +173,116 @@
     font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
   }
 
-  /* Subtle pulse used by MonitorCard when a fresh frame arrives. */
-  @keyframes warm-pulse {
+  /* Riveted-metal surface helper. Apply to any raised panel. */
+  .surface-rivet {
+    box-shadow: var(--shadow-rivet);
+  }
+  .surface-rivet-bright {
+    box-shadow: var(--shadow-rivet-bright);
+  }
+
+  .bg-forge-hatch {
+    background: var(--forge-hatch);
+  }
+  .bg-forge-blueprint {
+    background-color: var(--forge-floor);
+    background-image: var(--forge-blueprint);
+  }
+  .bg-forge-panel {
+    background: linear-gradient(
+      180deg,
+      var(--forge-panel-top),
+      var(--forge-panel-bottom)
+    );
+  }
+  .bg-forge-machine {
+    background: linear-gradient(
+      180deg,
+      var(--forge-machine-top),
+      var(--forge-machine-bottom)
+    );
+  }
+  .bg-forge-machine-action {
+    background: linear-gradient(
+      180deg,
+      var(--forge-machine-action-top),
+      var(--forge-machine-action-bottom)
+    );
+  }
+  .bg-forge-machine-logic {
+    background: linear-gradient(
+      180deg,
+      var(--forge-machine-logic-top),
+      var(--forge-machine-logic-bottom)
+    );
+  }
+
+  /* LED pulse — severity-driven. Use led-pulse-* on the dot itself. */
+  @keyframes led-pulse {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.55;
+      transform: scale(0.92);
+    }
+  }
+  .led-pulse-warn {
+    animation: led-pulse 1.5s ease-in-out infinite;
+  }
+  .led-pulse-crit {
+    animation: led-pulse 0.5s ease-in-out infinite;
+  }
+
+  /* Spark on fresh WS frame — replaces warm-pulse. */
+  @keyframes forge-spark {
     0% {
-      box-shadow: 0 0 0 0 rgba(245, 158, 71, 0.45);
+      box-shadow: 0 0 0 0 rgba(245, 158, 71, 0.5),
+        var(--shadow-rivet);
     }
     70% {
-      box-shadow: 0 0 0 12px rgba(245, 158, 71, 0);
+      box-shadow: 0 0 0 14px rgba(245, 158, 71, 0),
+        var(--shadow-rivet);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(245, 158, 71, 0),
+        var(--shadow-rivet);
+    }
+  }
+  .animate-forge-spark {
+    animation: forge-spark 900ms ease-out;
+  }
+
+  /* Pipe flow — applied to a stroke-dasharray dashed line on top of a pipe. */
+  @keyframes pipe-flow {
+    to {
+      stroke-dashoffset: -24;
+    }
+  }
+  .animate-pipe-flow {
+    stroke-dasharray: 6 6;
+    animation: pipe-flow 1.2s linear infinite;
+  }
+
+  /* Conveyor — translateX gradient looping. Apply to conveyor sections. */
+  @keyframes conveyor-slide {
+    to {
+      transform: translateX(-12px);
+    }
+  }
+  .animate-conveyor {
+    animation: conveyor-slide 1s linear infinite;
+  }
+
+  /* Backwards-compat aliases used by legacy components during migration. */
+  @keyframes warm-pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgba(245, 158, 71, 0.5);
+    }
+    70% {
+      box-shadow: 0 0 0 14px rgba(245, 158, 71, 0);
     }
     100% {
       box-shadow: 0 0 0 0 rgba(245, 158, 71, 0);
@@ -162,7 +292,6 @@
     animation: warm-pulse 900ms ease-out;
   }
 
-  /* Live state dot ping. */
   @keyframes dot-ping {
     0% {
       transform: scale(1);
@@ -178,8 +307,7 @@
     animation: dot-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
   }
 
-  /* Skeleton shimmer in warm tones. */
-  @keyframes warm-shimmer {
+  @keyframes forge-shimmer {
     0% {
       background-position: -200% 0;
     }
@@ -187,52 +315,108 @@
       background-position: 200% 0;
     }
   }
-  .animate-warm-shimmer {
+  .animate-warm-shimmer,
+  .animate-forge-shimmer {
     background-image: linear-gradient(
       90deg,
-      var(--color-surface) 0%,
-      var(--color-accent-soft) 50%,
-      var(--color-surface) 100%
+      var(--forge-machine-bottom) 0%,
+      var(--copper-glow-soft) 50%,
+      var(--forge-machine-bottom) 100%
     );
     background-size: 200% 100%;
-    animation: warm-shimmer 1.6s ease-in-out infinite;
+    animation: forge-shimmer 1.6s ease-in-out infinite;
   }
 
-  .shadow-warm-sm {
+  .shadow-warm-sm,
+  .shadow-forge-sm {
     box-shadow: var(--shadow-sm);
   }
-  .shadow-warm-md {
+  .shadow-warm-md,
+  .shadow-forge-md {
     box-shadow: var(--shadow-md);
   }
-  .shadow-warm-lg {
+  .shadow-warm-lg,
+  .shadow-forge-lg {
     box-shadow: var(--shadow-lg);
+  }
+
+  .ember-spark {
+    background: radial-gradient(
+        ellipse at 50% 100%,
+        rgba(245, 158, 71, 0.18) 0%,
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse at 50% 90%,
+        rgba(239, 68, 68, 0.1) 0%,
+        transparent 60%
+      );
+  }
+
+  /* Section divider — copper gradient that fades to nothing. */
+  .copper-fade {
+    background: linear-gradient(90deg, var(--forge-rim), transparent);
   }
 }
 
-/* ReactFlow warm theming overrides. */
-.react-flow-warm .react-flow__edge-path {
-  stroke: var(--color-accent-strong);
-  stroke-width: 1.5;
+/* ReactFlow Forge theming. */
+.react-flow-forge {
+  background: var(--forge-floor-deep);
+  background-image: var(--forge-blueprint);
 }
-.react-flow-warm .react-flow__handle {
-  border: 2px solid var(--color-surface);
+.react-flow-forge .react-flow__edge-path {
+  stroke: var(--forge-rim);
+  stroke-width: 6;
+  stroke-linecap: round;
+  filter: drop-shadow(0 1px 0 var(--forge-rim-bright))
+    drop-shadow(0 -1px 0 var(--forge-floor-deep));
 }
-.react-flow-warm .react-flow__controls-button {
-  background: var(--color-surface);
-  border: none;
-  border-bottom: 1px solid var(--color-border);
-  color: var(--color-text);
-  fill: var(--color-text);
+.react-flow-forge .react-flow__handle {
+  background: linear-gradient(180deg, var(--forge-rim-bright), var(--forge-rim-dim));
+  border: 1px solid var(--forge-floor-deep);
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 180, 0.4);
 }
-.react-flow-warm .react-flow__controls-button:hover {
-  background: var(--color-accent-soft);
+.react-flow-forge .react-flow__controls-button {
+  background: var(--forge-machine-bottom);
+  border: 1px solid var(--forge-rim-dim);
+  border-bottom: 1px solid var(--forge-floor-deep);
+  color: var(--forge-text);
+  fill: var(--forge-text);
 }
-.react-flow-warm .react-flow__attribution {
-  background: var(--color-surface);
-  color: var(--color-text-subtle);
-  border-radius: 6px;
+.react-flow-forge .react-flow__controls-button:hover {
+  background: var(--forge-machine-top);
+  color: var(--forge-text-accent);
+  fill: var(--forge-text-accent);
+}
+.react-flow-forge .react-flow__attribution {
+  background: var(--forge-machine-bottom);
+  color: var(--forge-text-dim);
+  border: 1px solid var(--forge-rim-dim);
+  border-radius: 4px;
   padding: 2px 6px;
 }
-.react-flow-warm .react-flow__attribution a {
-  color: var(--color-text-muted);
+.react-flow-forge .react-flow__attribution a {
+  color: var(--forge-text-muted);
+}
+.react-flow-forge .react-flow__minimap {
+  background: var(--forge-floor-deep);
+  border: 1px solid var(--forge-rim-dim);
+}
+
+/* Reduced-motion: kill all Forge animations. */
+@media (prefers-reduced-motion: reduce) {
+  .led-pulse-warn,
+  .led-pulse-crit,
+  .animate-forge-spark,
+  .animate-warm-pulse,
+  .animate-pipe-flow,
+  .animate-conveyor,
+  .animate-dot-ping,
+  .animate-warm-shimmer,
+  .animate-forge-shimmer {
+    animation: none !important;
+  }
 }
