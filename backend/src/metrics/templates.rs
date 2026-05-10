@@ -27,16 +27,16 @@ pub fn metrics_last_script(token: &str, label_name: &str, ids: &[String]) -> Str
     for id in ids {
         script.push_str(&format!(
             // CPU + MEM + DISK: instantaneous gauges. FETCH then MERGE.
-            "[ '{token}' 'cpu.usage_user' {{ '{label}' '{id}' }} NOW 2 m ] FETCH\n\
+            "[ '{token}' 'cpu.usage_user' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
              MERGE 'cpu.usage_user' RENAME\n\
-             [ '{token}' 'mem.used_percent' {{ '{label}' '{id}' }} NOW 2 m ] FETCH\n\
+             [ '{token}' 'mem.used_percent' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
              MERGE 'mem.used_percent' RENAME\n\
-             [ '{token}' 'disk.used_percent' {{ '{label}' '{id}' }} NOW 2 m ] FETCH\n\
+             [ '{token}' 'disk.used_percent' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
              MERGE 'disk.used_percent' RENAME\n\
-             [ '{token}' 'net.bytes_recv' {{ '{label}' '{id}' }} NOW 2 m ] FETCH\n\
+             [ '{token}' 'net.bytes_recv' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
              [ SWAP mapper.rate 1 0 0 ] MAP\n\
              MERGE 'net.bytes_recv' RENAME\n\
-             [ '{token}' 'net.bytes_sent' {{ '{label}' '{id}' }} NOW 2 m ] FETCH\n\
+             [ '{token}' 'net.bytes_sent' {{ '{label}' '{id}' }} NOW 5 m ] FETCH\n\
              [ SWAP mapper.rate 1 0 0 ] MAP\n\
              MERGE 'net.bytes_sent' RENAME\n",
             token = token,
