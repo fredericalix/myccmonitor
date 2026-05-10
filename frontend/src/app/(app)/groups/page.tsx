@@ -2,13 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Plus, StackSimple } from "@phosphor-icons/react";
+import { ArrowRight, Plus, Stack } from "@phosphor-icons/react";
 import { api, ApiError } from "@/services/api";
 import type { GroupView } from "@/services/types";
-import { RolledStateBadge } from "@/components/RolledStateBadge";
+import { LedIndicator } from "@/components/forge/LedIndicator";
+import { MachineCard, MachineLabel } from "@/components/forge/MachineCard";
+import { RiveterButton } from "@/components/forge/RiveterButton";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Card } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Chip } from "@/components/ui/Chip";
 import { SkeletonCard } from "@/components/ui/Skeleton";
@@ -17,7 +17,7 @@ import { toast } from "@/components/ui/Toaster";
 
 const KINDS = ["cc_application", "cc_addon", "synthetic"] as const;
 
-export default function GroupsPage() {
+export default function ProductionLinesPage() {
   const [groups, setGroups] = useState<GroupView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -69,10 +69,10 @@ export default function GroupsPage() {
       setNewPattern("");
       setNewKinds([]);
       setShowForm(false);
-      toast.success("Group created");
+      toast.success("Production line opened");
       refresh();
     } catch (err: unknown) {
-      toast.error("Failed to create group", {
+      toast.error("Could not open the line", {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -89,22 +89,22 @@ export default function GroupsPage() {
   return (
     <>
       <PageHeader
-        title="Monitor groups"
-        description="Group monitors with auto-matching rules (regex on name, monitor kind) and reference them from workflow rules with group:{id}:state."
+        title={
+          <span className="font-serif italic text-[var(--forge-text-accent)]">
+            Production lines
+          </span>
+        }
+        description="Group machines with auto-matching rules (regex on name, monitor kind) and address them in workflow rules with group:{id}:state."
         actions={
-          <Button
-            variant="primary"
-            onClick={() => setShowForm((s) => !s)}
-            size="md"
-          >
-            <Plus weight="bold" size={16} />
-            New group
-          </Button>
+          <RiveterButton variant="primary" onClick={() => setShowForm((s) => !s)}>
+            <Plus weight="bold" size={14} />
+            New line
+          </RiveterButton>
         }
       />
 
       {showForm ? (
-        <Card variant="elevated" className="p-5 mb-6">
+        <MachineCard className="p-5 mb-6">
           <form onSubmit={createGroup} className="space-y-4">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Input
@@ -126,11 +126,11 @@ export default function GroupsPage() {
                 value={newPattern}
                 onChange={(e) => setNewPattern(e.target.value)}
                 placeholder="^prod-"
-                hint="Monitors whose display name matches this regex are auto-included."
+                hint="Machines whose display name matches this regex are auto-included."
               />
             </div>
             <div>
-              <p className="text-xs font-medium text-text-muted mb-2 tracking-wide">
+              <p className="text-[10px] font-bold uppercase tracking-[1px] text-[var(--forge-text-dim)] mb-2">
                 Auto-match kinds
               </p>
               <div className="flex flex-wrap gap-2">
@@ -143,8 +143,8 @@ export default function GroupsPage() {
                       onClick={() => toggleKind(k)}
                       className={
                         on
-                          ? "rounded-full bg-accent text-accent-on px-3 py-1 text-xs font-medium"
-                          : "rounded-full bg-surface text-text-muted border border-border px-3 py-1 text-xs font-medium hover:bg-accent-soft"
+                          ? "rounded-[3px] bg-[linear-gradient(180deg,var(--copper-glow),#c87830)] text-[var(--forge-floor)] border border-[var(--forge-text-accent)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.5px]"
+                          : "rounded-[3px] bg-[var(--forge-floor-deep)] text-[var(--forge-text-muted)] border border-[var(--forge-rim-dim)] px-3 py-1 text-[11px] uppercase tracking-[0.5px] hover:text-[var(--forge-text-accent)] hover:border-[var(--forge-rim-bright)]"
                       }
                     >
                       {k}
@@ -154,23 +154,23 @@ export default function GroupsPage() {
               </div>
             </div>
             <div className="flex justify-end gap-2 pt-1">
-              <Button
+              <RiveterButton
                 variant="ghost"
                 onClick={() => setShowForm(false)}
                 disabled={creating}
               >
                 Cancel
-              </Button>
-              <Button
+              </RiveterButton>
+              <RiveterButton
                 type="submit"
                 variant="primary"
                 disabled={creating || !newName.trim()}
               >
-                {creating ? "Creating…" : "Create group"}
-              </Button>
+                {creating ? "Opening…" : "Open line"}
+              </RiveterButton>
             </div>
           </form>
-        </Card>
+        </MachineCard>
       ) : null}
 
       {loading ? (
@@ -179,39 +179,45 @@ export default function GroupsPage() {
           <SkeletonCard />
         </div>
       ) : error ? (
-        <Card className="p-5 border-critical/30 bg-critical-soft">
-          <p className="text-sm text-critical">{error}</p>
-        </Card>
+        <MachineCard variant="action" className="p-4">
+          <p className="text-[12px] text-[var(--forge-text)]">{error}</p>
+        </MachineCard>
       ) : groups.length === 0 ? (
         <EmptyState
-          icon={<StackSimple weight="duotone" size={28} />}
-          title="No groups yet"
-          description="Groups let you treat fleets of monitors as one. Use them in rule conditions like group:{id}:critical_count > 2."
+          icon={<Stack weight="duotone" size={28} />}
+          title="No production lines yet"
+          description="Lines let you treat fleets of machines as one. Use them in rule conditions like group:{id}:critical_count > 2."
           action={
-            <Button variant="primary" onClick={() => setShowForm(true)}>
-              <Plus weight="bold" size={16} />
-              Create your first group
-            </Button>
+            <RiveterButton variant="primary" onClick={() => setShowForm(true)}>
+              <Plus weight="bold" size={14} />
+              Open the first line
+            </RiveterButton>
           }
         />
       ) : (
         <ul className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {groups.map((g) => (
             <li key={g.id}>
-              <Card variant="interactive" className="p-5 h-full flex flex-col gap-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="truncate font-serif text-xl text-text">
+              <MachineCard
+                variant={g.rolled_state === "critical" ? "action" : "default"}
+                className="p-4 h-full flex flex-col gap-3 hover:-translate-y-0.5 hover:brightness-110 transition-[transform,filter] duration-150"
+              >
+                <MachineLabel>
+                  <span className="flex items-center gap-2 normal-case tracking-normal">
+                    <LedIndicator state={g.rolled_state} size="md" />
+                    <span className="font-serif text-[18px] leading-tight text-[var(--forge-text)] truncate">
                       {g.name}
-                    </p>
-                    {g.description ? (
-                      <p className="mt-1 text-xs text-text-muted line-clamp-2">
-                        {g.description}
-                      </p>
-                    ) : null}
-                  </div>
-                  <RolledStateBadge state={g.rolled_state} />
-                </div>
+                    </span>
+                  </span>
+                  <span className="rounded-[3px] border border-[var(--forge-rim-dim)] bg-[var(--forge-floor-deep)]/70 px-1.5 py-0.5 text-[9px] tracking-[0.5px] text-[var(--forge-text-muted)] font-mono">
+                    LINE
+                  </span>
+                </MachineLabel>
+                {g.description ? (
+                  <p className="-mt-1 text-[11px] text-[var(--forge-text-muted)] line-clamp-2">
+                    {g.description}
+                  </p>
+                ) : null}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <Chip>
                     {g.state_breakdown.total} member
@@ -230,13 +236,13 @@ export default function GroupsPage() {
                 </div>
                 <div className="mt-auto pt-1 flex justify-end">
                   <Link href={`/groups/${g.id}`}>
-                    <Button variant="ghost" size="sm">
-                      Manage
-                      <ArrowRight weight="bold" size={14} />
-                    </Button>
+                    <RiveterButton variant="ghost" size="sm">
+                      Inspect
+                      <ArrowRight weight="bold" size={12} />
+                    </RiveterButton>
                   </Link>
                 </div>
-              </Card>
+              </MachineCard>
             </li>
           ))}
         </ul>
