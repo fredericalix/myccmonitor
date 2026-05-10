@@ -21,7 +21,7 @@ myccmonitor is a multi-tenant supervision tool for Clever Cloud applications and
 
 **Backend** — Rust 1.85+ (edition 2024), Axum 0.8, Tokio, sqlx 0.8 (Postgres), tower-sessions 0.14 + tower-sessions-sqlx-store, aes-gcm 0.10, reqwest 0.12, lettre 0.11 (SMTP), `pulsar` 6.x (`pulsar-rs`, requires `protoc` at build time), `petgraph` 0.6 (cycle detection), `handlebars` 6 (notification templating), `tracing`.
 
-**Frontend** — Next.js **16** (app router; **breaking changes from Next 15** — read `frontend/AGENTS.md` and `frontend/node_modules/next/dist/docs/` before writing Next-specific code), TypeScript 5, React 19.2, Zustand 5, **Tailwind CSS v4** (CSS-only theme via `@theme` in `frontend/src/app/globals.css`), hand-rolled UI primitives (no shadcn), `@phosphor-icons/react`, `sonner`, ReactFlow 11 + Dagre. The visual system is **Forge Mécanique** — a locked dark industrial palette (burnt leather, copper, riveted steel, glowing LEDs); the previous warm-pastel light/dark theme pair has been retired. See §17 below.
+**Frontend** — Next.js **16** (app router; **breaking changes from Next 15** — read `frontend/AGENTS.md` and `frontend/node_modules/next/dist/docs/` before writing Next-specific code), TypeScript 5, React 19.2, Zustand 5, **Tailwind CSS v4** (CSS-only theme via `@theme` in `frontend/src/app/globals.css`), hand-rolled UI primitives (no shadcn), `@phosphor-icons/react`, `sonner`, ReactFlow 11 + Dagre. The visual system is **Forge Mécanique** — a locked dark industrial palette (burnt leather, copper, riveted steel, glowing LEDs); the previous warm-pastel light/dark theme pair has been retired. See §18 below.
 
 **Infra** — Postgres (data + sessions + LISTEN/NOTIFY + advisory locks), Apache Pulsar (durable webhook inbox + 30-day audit retention + delayed messages for rule escalations), Clever Cloud as deploy target.
 
@@ -77,13 +77,13 @@ myccmonitor/
 │       │       └── channels/                   Relay tower
 │       ├── components/
 │       │   ├── ui/                 generic primitives (Button, Card, Dialog, Skeleton, …)
-│       │   ├── forge/              Forge primitives (see §17): LedIndicator,
+│       │   ├── forge/              Forge primitives (see §18): LedIndicator,
 │       │   │                       MachineCard, MachineUnit, MachineGauge, Sector,
 │       │   │                       WSPill, RiveterButton, Antenna, SignalBars,
 │       │   │                       RolledStateReactor, Conveyor, BlueprintCard
 │       │   ├── layout/             AppShell, ControlPanel, ControlPanelLink, PageHeader
 │       │   └── RuleEditor/         ReactFlow canvas + Nodes/* + DebugPanel (legacy nodes;
-│       │                           Forge re-skin pending — see §18 deferred work)
+│       │                           Forge re-skin pending — see §18 deferred work at the end)
 │       ├── hooks/useOrgWebSocket.ts  auto-reconnecting WS hook with exposed connection state
 │       ├── services/api.ts           typed fetch wrapper
 │       └── lib/cn.ts                 clsx + tailwind-merge helper
@@ -170,7 +170,7 @@ The five lanes:
 1. **Webhook ingestion.** Frontend rewrites `/webhooks/cc/{token}` to backend. The handler authenticates by token, wraps the body in a `BusMessage`, and produces it on the Pulsar topic `cc-webhooks` with `partition_key = cc_org_id`. Returns `204` in under 100 ms.
 2. **Webhook consumer** (`backend/src/bus/consumer.rs`). Shared subscription so every backend instance load-balances. Parses, dedups via `webhook_dedup` (60 s window, cross-instance), maps the event to an `EventEffect` (Upsert / SetState / Delete), and on a real state transition calls `apply_state_change`, which writes history + broadcasts WS frame + invokes `rules::exec::trigger_for_monitor(state, user_id, monitor_id, Trigger::Webhook)`.
 3. **Monitor poller** (`backend/src/monitors/poller.rs`). Runs in a Tokio interval task every 60 s on every backend instance. Per due monitor, takes a `pg_try_advisory_xact_lock(hash(id))` inside a transaction; only the lock-winner does the work. Two paths: `refresh_app_state` reads CC's `state` field and reconciles, `write_sample` fetches metrics from Warp10 (chunked at `WARP10_BATCH_SIZE = 3` ids per script with `mapper.rate` per-instance for net counters), writes one row per non-null metric to `metric_readings` (auto-pruning to `KEEP_N_PER_METRIC = 10` rows per `(monitor, metric)` on each insert), reads back `latest_per_metric` to assemble the WS frame, and broadcasts a `MetricsSnapshot`. The frame carries the **last known value per metric** independently — disk's slow ~5 min cadence doesn't make the bar flicker between values and `n/a`. Both paths call `trigger_for_monitor(state, user_id, monitor_id, Trigger::Poll)`; the poll trigger is gated on `fresh_metric` (= this poll produced new data) so threshold rules don't fire repeatedly on stale carried-forward values.
-4. **Rule evaluator** (`backend/src/rules/`). See §9 below.
+4. **Rule evaluator** (`backend/src/rules/`). See §10 below. The Pulsar event bus that feeds it is documented in §9.
 5. **WebSocket fan-out** (`backend/src/ws/`). One dedicated Postgres connection per instance runs `LISTEN ws_broadcast`. Producers (consumer, poller, rule actions) call `pg_notify('ws_broadcast', json)` instead of pushing to local `org_buses` directly — that way every instance sees every frame. The handler at `GET /ws?org=cc_org_id` upgrades and subscribes to its instance's `org_bus`.
 
 ## 6. Data model (Postgres)
@@ -246,7 +246,146 @@ POST /webhooks/cc/:token
 
 If the auto-create endpoint changes or fails, fall back to manual setup instructions in the UI (v1.1 contingency).
 
-## 9. Workflow engine
+## 9. Pulsar event bus — why and how
+
+This is the section to read before touching anything in `backend/src/bus/`. It explains why we picked Apache Pulsar over the obvious alternatives, exactly how the two topics are wired, and the operational gotchas that bit us during Phase 2.
+
+### Why Pulsar (and not X)
+
+The webhook ingress path has four hard requirements that, taken together, exclude every cheaper option:
+
+1. **Zero data loss across backend restarts.** A Clever Cloud `DEPLOYMENT_FAIL` event arriving while a backend pod is being redeployed must reach the rule evaluator. We can never lose a state transition.
+2. **Multi-instance, work-stealing fan-out.** The backend runs ≥ 2 instances in prod. Each webhook must be processed exactly once across the fleet, with automatic load balancing on every redeploy.
+3. **A 30-day audit / replay window.** Operators need to ask "what events arrived for org X between T₁ and T₂?" without keeping a parallel audit table in Postgres.
+4. **Native delayed delivery for `Action::Escalate { delay_seconds }`.** Escalations have to survive backend restarts — a Tokio `sleep` in-process loses the timer if the process dies. Some external scheduler must hold the message until the deadline.
+
+Cheaper options checked and rejected:
+
+- **In-memory `tokio::sync::broadcast`.** Fails (1), (2), (3), and (4). Restart kills the queue, no cross-instance fan-out, no retention, no scheduling.
+- **Postgres-only (LISTEN/NOTIFY + a queue table).** `pg_notify` is **not durable** (subscribers miss messages they didn't `LISTEN` for), so we'd need a queue table polled by every instance. That's doable but brings: a queue-as-a-table workload that competes with the application's writes; no native delayed delivery (we'd reinvent it with `cron` or a "ready_at" column); and the audit log still sits in Postgres bloating the OLTP database. We do still use `LISTEN/NOTIFY` — but only for the WebSocket fan-out (small ephemeral payloads, fine to lose).
+- **Redis Streams.** Adds a service we don't otherwise need. No native delayed delivery (you'd hand-roll `ZADD … score=deadline` + a poller). Smaller community than Pulsar / Kafka for durable messaging at our scale.
+- **Apache Kafka.** Same durability story as Pulsar, but heavier ops, no native per-message scheduling (you'd use Kafka Streams + a state store, or a separate scheduler), and Clever Cloud doesn't expose a managed Kafka — adopting it would mean leaving the addon ecosystem.
+- **AWS SQS / Google Pub/Sub.** Vendor lock-in to a different cloud. We already deploy on Clever Cloud and Pulsar is a first-party CC addon ("MateriaMQ" — the Clever Cloud Pulsar product).
+
+Pulsar wins on every requirement at once: durable storage with configurable retention, `Shared` subscriptions = native work-stealing across instances, `deliver_at_time` on each message = native scheduled delivery (broker holds the message until the wall-clock target), and it's a supported CC addon so we get TLS endpoint + JWT auth + tenant/namespace provisioning out of the box.
+
+### Topic layout
+
+Two topics live under `persistent://${PULSAR_TENANT}/${PULSAR_NAMESPACE}/`:
+
+| Topic | Retention | Producer | Consumer subscription | Purpose |
+| --- | --- | --- | --- | --- |
+| `cc-webhooks` | **30 days** | `WebhookProducer` (one per backend instance) | `myccmonitor-processor` (Shared) | Inbox for every CC webhook + 30-day audit / replay window |
+| `rule-escalations` | **1 day** | `EscalationProducer` (one per instance) | `myccmonitor-escalator` (Shared) | Delayed-delivery messages produced by `Action::Escalate` |
+
+Both topics are auto-created at boot via `bus::ensure_topic_exists`. Idempotent — re-running on an existing topic is a no-op. The 30-day retention on `cc-webhooks` doubles the topic as our audit log: `pulsar-admin topics peek-messages` and the `Reader` API let us replay any window without a parallel Postgres table. Retention is set on the namespace policy, not per-message.
+
+### Producer naming — the `ProducerBusy` trap
+
+Every producer gets a unique name per instance:
+```
+myccmonitor-{role}-{INSTANCE_ID}-{uuid_v4}
+```
+where `INSTANCE_ID` is injected by Clever Cloud and the UUID changes on every cold start.
+
+Why: Pulsar treats producer names as a uniqueness key. If a backend pod dies without releasing its connection, the broker may reject a new producer with the **same** name as `ProducerBusy` until the broker times the dead session out (~minutes). Suffixing a fresh UUID on every boot side-steps the issue entirely — see `bus/escalations.rs:46-49` and `bus/producer.rs` for the same pattern. Phase 0 had a fixed name and tripped over this in CI; the lesson is encoded in CLAUDE.md §18.b.
+
+### Webhook ingress flow (`cc-webhooks`)
+
+```
+POST /webhooks/cc/:token                                  (any backend instance)
+  └─ verify token via webhook_configs                     (404 on miss)
+  └─ wrap raw body in BusMessage { token, user_id,
+       cc_org_id, raw_body, received_at }
+  └─ produce on Pulsar topic cc-webhooks
+       partition_key = cc_org_id                          (preserves per-org ordering)
+  └─ reply 204 (target latency <100 ms)
+
+[Pulsar broker holds the message in storage; Shared subscription
+ dispatches to whichever consumer is least loaded across the fleet.]
+
+Consumer (one per instance, Shared sub `myccmonitor-processor`)
+  └─ webhook_dedup INSERT … ON CONFLICT DO NOTHING        (60 s window, cross-instance via Postgres UNIQUE)
+       └─ conflict → ack & drop                           (duplicate from Pulsar redelivery)
+  └─ parse via WebhookEnvelope → EventEffect              (see bus/consumer.rs::map_event)
+  └─ apply (Upsert / SetState / Delete):
+       ├─ monitors::upsert_cc / set_state_if_changed / delete
+       ├─ monitor_state_history INSERT                    (state-transition audit)
+       ├─ pg_notify('ws_broadcast', json)                 (fans out the WS frame to every instance)
+       └─ rules::exec::trigger_for_monitor(Trigger::Webhook)
+  └─ ack on success                                       (Pulsar advances the cursor)
+  └─ on panic / Err: don't ack → Pulsar redelivers with
+     exponential backoff → DLQ topic after N attempts     (broker default policy)
+```
+
+`partition_key = cc_org_id` matters: Pulsar guarantees ordering **within a partition**. Anchoring all events for one CC org to the same partition means the deploy-success that ought to follow a deploy-fail can't be reordered behind it.
+
+The `webhook_dedup` table (Postgres) is the cross-instance dedup primitive — it does the work that exactly-once delivery (which Pulsar does not promise) leaves on the table. Pulsar guarantees at-least-once; the `INSERT … ON CONFLICT DO NOTHING` collapses duplicates within a 60-second window.
+
+### Escalations flow (`rule-escalations`)
+
+The escalator topic uses a single Pulsar primitive that does most of the heavy lifting: `producer::Message::deliver_at_time = now_ms + delay_ms`. The broker simply holds the message until the wall-clock target. Code in `bus/escalations.rs::EscalationProducer::schedule`:
+
+```
+Action::Escalate { delay_seconds, target_rule_id }
+  └─ EscalationMessage { user_id, rule_id: target_rule_id,
+                         from_rule_id, scheduled_at_ms,
+                         scheduled_for_ms = now + delay*1000 }
+  └─ producer.send(payload, deliver_at_time = scheduled_for_ms)
+
+[Broker holds the message until scheduled_for_ms.]
+
+EscalationConsumer (Shared sub `myccmonitor-escalator`, every instance)
+  └─ deserialize EscalationMessage
+  └─ db::rules::find(rule_id) for the user
+  └─ rules::exec::execute_rule(state, rule, Trigger::Escalation { from_rule_id })
+  └─ ack
+```
+
+Crucially this means escalation timers **survive backend restarts** (the broker is the source of truth for "when") and can be picked up by **any** instance (whichever subscriber is connected when the message comes due). No leader election, no in-process timers, no cron table to maintain.
+
+### Replay & audit
+
+Because `cc-webhooks` retains 30 days of messages, an operator can introspect any incident after the fact:
+
+```bash
+# Count + size + backlog for the topic
+pulsar-admin topics stats persistent://${PULSAR_TENANT}/${PULSAR_NAMESPACE}/cc-webhooks
+
+# Peek the last N messages on the processor subscription
+pulsar-admin topics peek-messages -n 20 -s myccmonitor-processor \
+    persistent://${PULSAR_TENANT}/${PULSAR_NAMESPACE}/cc-webhooks
+
+# Programmatic replay from a timestamp (read-only — does NOT re-trigger processing)
+# Roadmap: a thin admin HTTP endpoint that wraps a Pulsar Reader from a given
+# `MessageId::Earliest` or a millisecond timestamp.
+```
+
+The replay is intentionally **read-only**; calling `Reader` does not move the consumer cursor on `myccmonitor-processor`, so it never re-fires rules or notifications. If you ever need to *replay-and-execute*, that's a separate consumer with its own subscription name.
+
+### Operational gotchas
+
+- **`protoc` is a hard build dependency.** The `pulsar` 6.x crate (`pulsar-rs`) generates protobuf bindings at compile time. macOS dev: `brew install protobuf`. Clever Cloud build container: already provided. CI: needs the apt package. Without it `cargo build` fails fast — see CLAUDE.md §2 quick start.
+- **Env priority for the broker URL.** Both `PULSAR_BINARY_URL` and `ADDON_PULSAR_BINARY_URL` are read in that order. The first wins. In dev with the Docker standalone you must point `PULSAR_BINARY_URL` at `pulsar://localhost:6650` *and* keep `PULSAR_TOKEN` empty — the no-auth code path in `bus::connect` skips the JWT block when the token is blank. On CC the addon injects all four `PULSAR_*` vars and TLS is mandatory (`pulsar+ssl://…:6651`).
+- **Subscription type must be `Shared` for both topics.** `Exclusive` would let a single consumer monopolise the topic — rest of the fleet would idle. `Failover` would partition by hash and cap throughput at one-consumer-per-partition. `Shared` does the right thing: the broker round-robins messages across active consumers.
+- **Partitioned vs non-partitioned topics.** We use **non-partitioned** topics today (sufficient for current volume). The flow above with `partition_key = cc_org_id` still works — Pulsar threads `partition_key` into ordering hints even on a non-partitioned topic. Switching to partitioned later (`pulsar-admin topics create-partitioned-topic …`) keeps the ordering guarantee per partition without code changes.
+- **DLQ.** Failed-then-retried messages eventually land in `<topic>-DLQ` per the broker's default redelivery policy. We don't have a UI for it yet (CLAUDE.md §21 future work). For now, `pulsar-admin topics list` exposes the DLQ topic and `peek-messages` works as expected.
+- **`webhook_dedup` is Postgres-side, not Pulsar-side.** Pulsar offers idempotent producers, but the dedup we actually care about is "two backend instances both picked up the same message via at-least-once delivery". That is a *consumer-side* problem and Postgres does the job better than fiddling with broker config.
+
+### File map
+
+```
+backend/src/bus/
+├── mod.rs              connect(cfg) → Pulsar<TokioExecutor>; ensure_topic_exists
+├── message.rs          BusMessage envelope + serde
+├── producer.rs         WebhookProducer::build / publish for cc-webhooks
+├── consumer.rs         Shared-sub consumer for cc-webhooks; map_event; apply_state_change
+└── escalations.rs      EscalationProducer (deliver_at_time) + run_consumer for rule-escalations
+```
+
+Background tasks are spawned in `main.rs` after the producer/consumer build steps; both consumers run forever inside their own `tokio::spawn` and are torn down by process shutdown.
+
+## 10. Workflow engine
 
 Conceptually lifted from faxmon (`faxmon-backend/internal/services/rule_service_impl.go`), adapted to CC and improved with four fixes faxmon doesn't have: per-rule cooldown, time-based `for_duration` conditions, synthetic monitors, group-aware rules.
 
@@ -311,9 +450,9 @@ Actions on a matching rule run in **parallel** via `tokio`. After `SetMonitorSta
   - `GET /api/rules/:id/firings` — recent audit rows
   - `GET /api/rules/:id/versions`, `POST /api/rules/:id/versions/:version_id/restore`
   - `POST /api/rules/:id/test` — dry-run; returns `{matched, actions_that_would_run}`
-  - `GET /api/rules/:id/debug` — see §14
+  - `GET /api/rules/:id/debug` — see §15
 
-## 10. Notification dispatch
+## 11. Notification dispatch
 
 **Adapter trait** (`notifications/adapters.rs`):
 
@@ -344,7 +483,7 @@ Default templates fire when the user leaves the field blank (`"{{monitor.display
 
 **Dispatcher** (`notifications/dispatch.rs`): on each `SendNotification` action, fetches the channel + the trigger's monitor, builds a JSON `NotifContext`, renders subject + body, runs the adapter with **3× exponential-backoff retry** (1 s → 4 s → 16 s). On success: `record_success` resets `failure_count`, inserts an `alerts` row, marks `notified_at = now()`. On final failure: `record_failure` increments + records the message, inserts an `alerts` row with `delivered: false`.
 
-## 11. WebSocket + LISTEN/NOTIFY
+## 12. WebSocket + LISTEN/NOTIFY
 
 **Why LISTEN/NOTIFY.** With multi-instance backends, an in-process `broadcast::Sender` only fans out within one instance. LISTEN/NOTIFY uses Postgres (already in the stack) to fan out cross-instance with sub-50 ms latency. The 8000-byte payload limit fits all our frame JSONs.
 
@@ -360,7 +499,7 @@ Default templates fire when the user leaves the field blank (`"{{monitor.display
 
 **Frontend.** `useOrgWebSocket(ccOrgId, onFrame)` opens `/ws?org=…`, exposes a `WsConnectionState` enum (`connecting | connected | reconnecting | offline`). Reconnects with exponential backoff (1 s → 30 s max). The sidebar `WebSocketIndicator` reads this state and displays a coloured pulse.
 
-## 12. Multi-instance & advisory locks
+## 13. Multi-instance & advisory locks
 
 **Polling** (`monitors/poller.rs`): each due monitor is wrapped in its own short transaction:
 
@@ -380,7 +519,7 @@ The `xact` variant is critical: session-scoped advisory locks acquired on one po
 
 **Rule firing** is per-instance: whichever instance consumed the Pulsar message OR ran the poll cycle owns the rule evaluation and notification dispatch. The chain stays local; cross-instance broadcast happens only via `pg_notify` for the WS layer.
 
-## 13. Deployment on Clever Cloud
+## 14. Deployment on Clever Cloud
 
 **Apps**
 
@@ -421,7 +560,7 @@ Each deploy pushes the current branch's HEAD to the matching CC remote (`myccmon
 - `CC_RUN_COMMAND="cd frontend && npm run build && npm start"` is required because the CC Node runtime doesn't run `npm run build` on its own.
 - `<name>.cleverapps.io` shortcut requires `clever domain add` after the first deploy.
 
-## 14. Diagnostic endpoints & observability
+## 15. Diagnostic endpoints & observability
 
 Two read-only debug endpoints help answer "why isn't this working?" questions without leaving the dashboard.
 
@@ -486,11 +625,11 @@ Implementation in `backend/src/handlers/api.rs::monitor_debug` reuses `monitors:
 
 With the default `RUST_LOG=info,sqlx=warn`, every state transition produces a readable trace in `clever logs --alias backend`.
 
-## 15. Phase log pointer
+## 16. Phase log pointer
 
 The chronological record of how the codebase was built — which phase shipped what, what bugs we hit, what we lifted from sibling projects — lives in [CLAUDE.md §22 "Implementation log"](../CLAUDE.md#22-implementation-log). Read it when you want to understand *why* a particular design decision was made.
 
-## 16. Testing & verification
+## 17. Testing & verification
 
 **Backend**
 
@@ -537,7 +676,7 @@ SELECT pid, query FROM pg_stat_activity WHERE query LIKE '%LISTEN%';
 
 **Integration testing.** Most of the stack is exercised end-to-end by running the full docker-compose + a CC dev OAuth consumer + a real CC org. Unit tests live next to the code they test (`#[cfg(test)] mod tests`); coverage is currently sparse and is expected to grow with each new feature.
 
-## 17. Forge Mécanique design system
+## 18. Forge Mécanique design system
 
 The frontend is built around an industrial metaphor: monitored apps are "machines" on the floor, groups are "production lines" with reactors and conveyors, channels are "transmitters" in a "relay tower", rules are "blueprints" in a "library". The vocabulary is purely UI; the underlying types and APIs keep the technical names (monitor, group, rule, channel).
 
