@@ -1,7 +1,7 @@
 //! Parse `monitor:{uuid}:property` and `group:{uuid}:property` field strings
 //! and fetch the live property values for the evaluator.
 
-use crate::db::{metric_samples, monitor_groups, monitor_state_history, monitors};
+use crate::db::{metric_readings, monitor_groups, monitor_state_history, monitors};
 use crate::groups::compute_view;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -137,27 +137,30 @@ async fn fetch_monitor(
             Some(m) => FieldValue::Bool(m.acknowledged),
             None => FieldValue::Null,
         },
-        MonitorProp::Cpu | MonitorProp::Mem | MonitorProp::Disk | MonitorProp::NetIn | MonitorProp::NetOut => {
-            match metric_samples::latest(pool, monitor_id).await? {
-                Some(s) => match prop {
-                    MonitorProp::Cpu => to_field(s.cpu),
-                    MonitorProp::Mem => to_field(s.mem),
-                    MonitorProp::Disk => to_field(s.disk),
-                    MonitorProp::NetIn => to_field(s.net_in),
-                    MonitorProp::NetOut => to_field(s.net_out),
-                    _ => unreachable!(),
-                },
+        MonitorProp::Cpu
+        | MonitorProp::Mem
+        | MonitorProp::Disk
+        | MonitorProp::NetIn
+        | MonitorProp::NetOut => {
+            // Each metric is stored as its own row in metric_readings; we
+            // pull the latest reading per metric and pick the one this prop
+            // refers to. Returns Null if the metric isn't being emitted (CC
+            // limitation per runtime) or if no poll cycle has run yet.
+            let key = match prop {
+                MonitorProp::Cpu => "cpu",
+                MonitorProp::Mem => "mem",
+                MonitorProp::Disk => "disk",
+                MonitorProp::NetIn => "net_in",
+                MonitorProp::NetOut => "net_out",
+                _ => unreachable!(),
+            };
+            let map = metric_readings::latest_per_metric(pool, monitor_id).await?;
+            match map.get(key) {
+                Some(r) => FieldValue::Number(r.value),
                 None => FieldValue::Null,
             }
         }
     })
-}
-
-fn to_field(v: Option<f64>) -> FieldValue {
-    match v {
-        Some(x) => FieldValue::Number(x),
-        None => FieldValue::Null,
-    }
 }
 
 async fn fetch_group(

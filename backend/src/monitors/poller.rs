@@ -15,7 +15,7 @@ use crate::monitors::state_map;
 use crate::rules::exec::{Trigger, trigger_for_monitor};
 use crate::state::AppState;
 use crate::ws::{self, WsFrame};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::time::Duration as StdDuration;
@@ -23,29 +23,17 @@ use tokio::time::{MissedTickBehavior, interval};
 use uuid::Uuid;
 
 const POLL_TICK: StdDuration = StdDuration::from_secs(60);
-const PURGE_EVERY_N_TICKS: u32 = 60;
-const PURGE_AGE_HOURS: i64 = 24;
 const POLL_BATCH_LIMIT: i64 = 200;
 
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     let mut tick = interval(POLL_TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut counter: u32 = 0;
     tracing::info!(period_seconds = POLL_TICK.as_secs(), "poller started");
 
     loop {
         tick.tick().await;
-        counter = counter.wrapping_add(1);
-
-        if counter % PURGE_EVERY_N_TICKS == 0 {
-            let cutoff = Utc::now() - Duration::hours(PURGE_AGE_HOURS);
-            match db::metric_samples::purge_older_than(&state.pool, cutoff).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(rows = n, "purged old metric_samples"),
-                Err(e) => tracing::warn!(error = ?e, "purge_older_than failed"),
-            }
-        }
-
+        // No periodic purge: metric_readings retention is enforced per-row
+        // at insert time (KEEP_N_PER_METRIC).
         if let Err(e) = poll_once(&state).await {
             tracing::error!(error = ?e, "poll cycle errored");
         }
@@ -353,28 +341,48 @@ async fn write_sample(
     let fresh_metric =
         cpu_d.is_some() || mem_d.is_some() || disk_d.is_some() || net_in_d.is_some() || net_out_d.is_some();
 
-    // metric_samples::insert applies carry-forward (last non-null in the
-    // last 30 min) for any field that came back null this poll. The returned
-    // row has the post-carry-forward values, which we use for the WS frame
-    // so disk stays visible between its slow-cadence samples.
-    let stored = match db::metric_samples::insert(
-        pool, monitor.id, ts, cpu_d, mem_d, disk_d, net_in_d, net_out_d,
-    )
-    .await
-    {
-        Ok(row) => Some(row),
-        Err(e) => {
-            tracing::warn!(error = ?e, monitor_id = %monitor.id, "insert metric_sample failed");
-            None
+    // Write each non-null reading as its own row in metric_readings. Each
+    // call also prunes to keep only the 10 most recent for that
+    // (monitor, metric_name) — bounded growth, no NULLs.
+    let to_write: [(&str, Option<f64>); 5] = [
+        ("cpu", cpu_d),
+        ("mem", mem_d),
+        ("disk", disk_d),
+        ("net_in", net_in_d),
+        ("net_out", net_out_d),
+    ];
+    for (name, opt) in to_write {
+        if let Some(v) = opt {
+            if let Err(e) =
+                db::metric_readings::insert_and_prune(pool, monitor.id, name, ts, v).await
+            {
+                tracing::warn!(
+                    error = ?e, monitor_id = %monitor.id, metric = %name,
+                    "insert metric_reading failed"
+                );
+            }
         }
-    };
+    }
     if let Err(e) = bump_last_poll(pool, monitor.id).await {
         tracing::warn!(error = ?e, monitor_id = %monitor.id, "bump last_poll_at failed");
     }
-    let (b_cpu, b_mem, b_disk, b_net_in, b_net_out) = match stored.as_ref() {
-        Some(s) => (s.cpu, s.mem, s.disk, s.net_in, s.net_out),
-        None => (cpu_d, mem_d, disk_d, net_in_d, net_out_d),
+
+    // For the WS frame, read back the latest per metric (= what we just wrote
+    // for the fresh ones + the previous values for those CC didn't emit this
+    // tick). The dashboard always shows the last known reading; disk stays
+    // visible between its slow-cadence samples.
+    let latest = match db::metric_readings::latest_per_metric(pool, monitor.id).await {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(error = ?e, monitor_id = %monitor.id, "latest_per_metric failed");
+            std::collections::HashMap::new()
+        }
     };
+    let b_cpu = latest.get("cpu").map(|r| r.value);
+    let b_mem = latest.get("mem").map(|r| r.value);
+    let b_disk = latest.get("disk").map(|r| r.value);
+    let b_net_in = latest.get("net_in").map(|r| r.value);
+    let b_net_out = latest.get("net_out").map(|r| r.value);
     let any_to_broadcast = b_cpu.is_some()
         || b_mem.is_some()
         || b_disk.is_some()

@@ -3,7 +3,7 @@
 
 use crate::api::{CcClient, SUBSCRIBED_EVENTS};
 use crate::auth::AuthenticatedUser;
-use crate::db::metric_samples::{self, MetricSample};
+use crate::db::metric_readings::{self, MetricReading};
 use crate::db::monitors::{self, Monitor};
 use crate::db::orgs::{self, Org, OrgInput};
 use crate::db::webhook_configs::{self, WebhookConfig};
@@ -18,6 +18,7 @@ use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
 use serde::Serialize;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 pub fn router() -> Router<AppState> {
@@ -33,11 +34,44 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// Five metrics the poller writes to `metric_samples` on every cycle. The
+/// Five metrics the poller writes to `metric_readings` on every cycle. The
 /// debug endpoint compares this set against what the table actually has on
 /// the last 30 min to answer "why is disk/net empty for this app?".
 const EXPECTED_METRICS: &[&str] = &["cpu", "mem", "disk", "net_in", "net_out"];
 const DEBUG_WINDOW_MINUTES: i64 = 30;
+
+/// Wire-compatible shape for the snapshots endpoint and debug
+/// `latest_sample`. Same JSON as before the per-metric refacto so the
+/// frontend doesn't need to change. `ts` is the max of the per-metric
+/// timestamps in the latest_per_metric set.
+#[derive(Serialize)]
+struct MetricSnapshotApi {
+    monitor_id: Uuid,
+    ts: DateTime<Utc>,
+    cpu: Option<f64>,
+    mem: Option<f64>,
+    disk: Option<f64>,
+    net_in: Option<f64>,
+    net_out: Option<f64>,
+}
+
+/// Build a MetricSnapshotApi from a HashMap<metric_name, MetricReading>.
+fn snapshot_from_map(monitor_id: Uuid, m: &HashMap<String, MetricReading>) -> MetricSnapshotApi {
+    let max_ts = m
+        .values()
+        .map(|r| r.ts)
+        .max()
+        .unwrap_or_else(Utc::now);
+    MetricSnapshotApi {
+        monitor_id,
+        ts: max_ts,
+        cpu: m.get("cpu").map(|r| r.value),
+        mem: m.get("mem").map(|r| r.value),
+        disk: m.get("disk").map(|r| r.value),
+        net_in: m.get("net_in").map(|r| r.value),
+        net_out: m.get("net_out").map(|r| r.value),
+    }
+}
 
 #[derive(Serialize)]
 struct MonitorDebugResponse {
@@ -55,7 +89,7 @@ struct MonitorDebugResponse {
     /// "why is disk/net empty?" — these are not emitted by CC for this app.
     missing_metrics: Vec<&'static str>,
     expected_metrics: &'static [&'static str],
-    latest_sample: Option<MetricSample>,
+    latest_sample: Option<MetricSnapshotApi>,
     last_poll_at: Option<DateTime<Utc>>,
     note: Option<&'static str>,
 }
@@ -80,9 +114,14 @@ async fn monitor_debug(
     }
 
     let last_poll_at = monitor.last_poll_at;
-    let latest_sample = metric_samples::latest(&state.pool, monitor.id).await?;
     let since = Utc::now() - Duration::minutes(DEBUG_WINDOW_MINUTES);
-    let availability = metric_samples::availability(&state.pool, monitor.id, since).await?;
+    let availability = metric_readings::availability(&state.pool, monitor.id, since).await?;
+    let latest_map = metric_readings::latest_per_metric(&state.pool, monitor.id).await?;
+    let latest_sample = if latest_map.is_empty() {
+        None
+    } else {
+        Some(snapshot_from_map(monitor.id, &latest_map))
+    };
 
     let mut available_metrics = Vec::new();
     let mut missing_metrics = Vec::new();
@@ -127,14 +166,26 @@ async fn list_snapshots(
     State(state): State<AppState>,
     auth: AuthenticatedUser,
     Path(cc_org_id): Path<String>,
-) -> Result<Json<Vec<MetricSample>>, AppError> {
+) -> Result<Json<Vec<MetricSnapshotApi>>, AppError> {
     // Multi-tenant: verify org ownership before reading; the SQL JOIN below
     // filters by user_id too as defense in depth.
     let _org = orgs::find_by_user_and_cc_id(&state.pool, auth.id, &cc_org_id)
         .await?
         .ok_or(AppError::Forbidden)?;
-    let rows = metric_samples::latest_for_org(&state.pool, auth.id, &cc_org_id).await?;
-    Ok(Json(rows))
+    let rows = metric_readings::latest_per_metric_for_org(&state.pool, auth.id, &cc_org_id).await?;
+    // Group by monitor_id, then assemble a MetricSnapshotApi per monitor.
+    let mut by_monitor: HashMap<Uuid, HashMap<String, MetricReading>> = HashMap::new();
+    for r in rows {
+        by_monitor
+            .entry(r.monitor_id)
+            .or_default()
+            .insert(r.metric_name.clone(), r);
+    }
+    let snapshots: Vec<MetricSnapshotApi> = by_monitor
+        .into_iter()
+        .map(|(monitor_id, m)| snapshot_from_map(monitor_id, &m))
+        .collect();
+    Ok(Json(snapshots))
 }
 
 async fn list_monitors(
