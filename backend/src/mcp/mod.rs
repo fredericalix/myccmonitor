@@ -25,10 +25,16 @@ use crate::state::AppState;
 /// after `AppState` is constructed.
 pub fn build_router(state: AppState) -> Router<AppState> {
     let factory_state = state.clone();
+    // rmcp's default `allowed_hosts` is `["localhost", "127.0.0.1", "::1"]`
+    // as a DNS-rebinding guard for locally-bound servers. We're a public
+    // TLS-fronted endpoint with our own Bearer auth, so DNS rebinding isn't
+    // the relevant threat model; disable the host check rather than chase
+    // every CC subdomain.
+    let config = StreamableHttpServerConfig::default().disable_allowed_hosts();
     let service = StreamableHttpService::new(
         move || Ok(server::McpServer::new(factory_state.clone())),
         Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default(),
+        config,
     );
 
     Router::new()
