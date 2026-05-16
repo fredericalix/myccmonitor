@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
       { source: "/api/:path*", destination: `${BACKEND}/api/:path*` },
       { source: "/webhooks/:path*", destination: `${BACKEND}/webhooks/:path*` },
       { source: "/ws", destination: `${BACKEND}/ws` },
+      { source: "/mcp", destination: `${BACKEND}/mcp` },
+      { source: "/mcp/:path*", destination: `${BACKEND}/mcp/:path*` },
     ];
   },
 };
