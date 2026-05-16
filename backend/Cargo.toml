@@ -75,6 +75,16 @@ lettre = { version = "0.11", default-features = false, features = [
     "builder",
 ] }
 
+# MCP server (Model Context Protocol) — exposes a Streamable HTTP endpoint at /mcp
+rmcp = { version = "1.7", features = [
+    "server",
+    "transport-streamable-http-server",
+    "macros",
+] }
+schemars = "1"
+sha2 = "0.10"
+http = "1"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

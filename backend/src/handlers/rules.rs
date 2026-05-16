@@ -182,7 +182,10 @@ async fn get_debug(
     ))
 }
 
-async fn save_inner(
+/// Shared save path between the REST handler and the MCP server. Validates
+/// the rule (name, cooldown, condition tree, action shapes, cross-tenant
+/// refs, static DAG cycle) and persists it with its dependency index.
+pub async fn save_inner(
     state: &AppState,
     user_id: Uuid,
     id: Option<Uuid>,

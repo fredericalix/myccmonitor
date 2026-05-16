@@ -319,3 +319,19 @@ export interface RuleDebugResponse {
   groups_referenced: GroupDebugInfo[];
   channels_used: ChannelDebugInfo[];
 }
+
+export interface McpStatus {
+  enabled: boolean;
+  has_token: boolean;
+  token_prefix: string | null;
+  created_at: string | null;
+  last_used_at: string | null;
+  endpoint_url: string;
+}
+
+export interface McpTokenCreated {
+  token: string;
+  token_prefix: string;
+  created_at: string;
+  endpoint_url: string;
+}

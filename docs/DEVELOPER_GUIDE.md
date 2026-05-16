@@ -60,7 +60,9 @@ myccmonitor/
 │       ├── notifications/          adapter trait + 4 impls + handlebars + dispatch + retry
 │       ├── ws/                     OrgBus, LISTEN/NOTIFY bridge, frame types
 │       ├── webhooks/               receiver + event parser
-│       └── bus/                    Pulsar producer + consumers (cc-webhooks, rule-escalations)
+│       ├── bus/                    Pulsar producer + consumers (cc-webhooks, rule-escalations)
+│       └── mcp/                    MCP server: Bearer auth + token mint/hash +
+│                                   StreamableHttpService with 25 tools (Phase 12)
 ├── frontend/
 │   ├── package.json
 │   ├── next.config.ts              proxies /auth /api /ws /webhooks to backend
@@ -74,7 +76,8 @@ myccmonitor/
 │       │       ├── orgs/, orgs/[ccOrgId]/      Workshops list, Control Room
 │       │       ├── groups/, groups/[id]/       Production Lines list, detail
 │       │       ├── rules/, rules/new/, rules/[id]/  Blueprint Library + editor
-│       │       └── channels/                   Relay tower
+│       │       ├── channels/                   Relay tower
+│       │       └── settings/                   Workbench (MCP toggle + token mgmt)
 │       ├── components/
 │       │   ├── ui/                 generic primitives (Button, Card, Dialog, Skeleton, …)
 │       │   ├── forge/              Forge primitives (see §18): LedIndicator,
@@ -82,6 +85,7 @@ myccmonitor/
 │       │   │                       WSPill, RiveterButton, Antenna, SignalBars,
 │       │   │                       RolledStateReactor, Conveyor, BlueprintCard
 │       │   ├── layout/             AppShell, ControlPanel, ControlPanelLink, PageHeader
+│       │   ├── Settings/           McpPanel (Workbench MCP toggle + token mgmt)
 │       │   └── RuleEditor/         ReactFlow canvas + Nodes/* + DebugPanel (legacy nodes;
 │       │                           Forge re-skin pending — see §18 deferred work at the end)
 │       ├── hooks/useOrgWebSocket.ts  auto-reconnecting WS hook with exposed connection state
@@ -624,6 +628,98 @@ Implementation in `backend/src/handlers/api.rs::monitor_debug` reuses `monitors:
 - `notifications/dispatch.rs::dispatch` — logs channel resolution + per-attempt result + final delivered/failed.
 
 With the default `RUST_LOG=info,sqlx=warn`, every state transition produces a readable trace in `clever logs --alias backend`.
+
+## 15.b MCP server
+
+Shipped in Phase 12. The full reference lives in [CLAUDE.md §20.b](../CLAUDE.md#20b-mcp-server-phase-12); this section is the engineer-facing distillation — how it fits the codebase, how it's wired, what to know when you touch it.
+
+### Wiring
+
+```
+client (Claude Code / Claude.ai / ChatGPT) ──HTTPS──► Axum router
+                                                       │
+                                                       ├─ /api/*   (session cookie)
+                                                       ├─ /auth/*
+                                                       ├─ /ws
+                                                       ├─ /webhooks/*
+                                                       └─ /mcp     ← Phase 12
+                                                           │
+                                                           └─► from_fn_with_state(mcp_auth_layer)
+                                                               │  validates Bearer mccm_…
+                                                               │  injects McpAuth { user_id }
+                                                               └─► StreamableHttpService<McpServer, LocalSessionManager>
+```
+
+`backend/src/main.rs` builds `mcp::build_router(state)` and `.merge()`s it onto the main router before applying `with_state`. The `StreamableHttpService` is a `tower::Service` so it composes natively — no separate listener, no proxy.
+
+### File map
+
+| File | Purpose |
+| --- | --- |
+| `backend/migrations/20260508000018_mcp.sql` | Adds 5 columns to `users` + UNIQUE partial index on `mcp_token_hash`. |
+| `backend/src/mcp/mod.rs` | `build_router(state)` constructs the Streamable HTTP service + Bearer layer. |
+| `backend/src/mcp/token.rs` | `generate() -> GeneratedToken { raw, hash, prefix }` + `hash(raw) -> Vec<u8>`. |
+| `backend/src/mcp/auth.rs` | `mcp_auth_layer` middleware. Validates `Authorization: Bearer mccm_…`, looks up the user via `find_by_mcp_token_hash`, fires a `tokio::spawn` to update `mcp_token_last_used_at`, inserts `McpAuth { user_id }` into request extensions. |
+| `backend/src/mcp/server.rs` | `McpServer` struct + 25 `#[tool]` methods via `rmcp` 1.7. Each tool: `auth_from_ctx(&ctx)?` to extract the user_id, then call the same `db::*` / `handlers::*` helpers the REST routes use. |
+| `backend/src/handlers/mcp_admin.rs` | Session-auth REST: `GET /api/mcp`, `POST /api/mcp/{enable,disable,token}`, `DELETE /api/mcp/token`. |
+| `backend/src/db/users.rs` | 6 helpers: `get_mcp_status`, `set_mcp_enabled`, `set_mcp_token`, `clear_mcp_token`, `find_by_mcp_token_hash`, `touch_mcp_last_used`. |
+
+### Token & lifecycle
+
+- Token format: `mccm_<43 chars b64url>` (32 random bytes encoded). The `mccm_` prefix makes the token trivially recognisable in logs and secret scanners.
+- Storage: sha256 hash in `users.mcp_token_hash` (UNIQUE partial index) + first 12 chars in `users.mcp_token_prefix` purely as a UI label. The raw bytes are never persisted; the dialog at `/settings` is the only place the user sees them.
+- Toggle: `users.mcp_enabled` is the global kill switch. The middleware's lookup explicitly filters by `mcp_enabled = TRUE`, so toggling off rejects every request even while the token is intact on file.
+
+### Auth flow (cold path, ~1 SQL query)
+
+1. Middleware reads `Authorization: Bearer mccm_…` — anything else is 401.
+2. `token::hash(raw)` computes sha256.
+3. `users::find_by_mcp_token_hash(pool, &hash)` does `SELECT id FROM users WHERE mcp_token_hash = $1 AND mcp_enabled = TRUE`. Uses the unique partial index, so it's O(log n).
+4. On match, the request goes through with `req.extensions_mut().insert(McpAuth { user_id })`. A `tokio::spawn` task updates `mcp_token_last_used_at` — fire-and-forget so it never adds latency.
+5. The rmcp `StreamableHttpService` lifts `http::request::Parts` into `RequestContext.extensions`, so each tool can call `parts.extensions.get::<McpAuth>()` to recover the user_id.
+
+### Tool surface
+
+25 tools, all reuse existing helpers (no parallel business logic):
+
+- **Reads**: `list_orgs`, `list_monitors`, `get_monitor_debug`, `list_groups`, `get_group`, `list_rules`, `get_rule`, `list_rule_firings`, `list_rule_versions`, `test_rule`, `debug_rule`, `list_channels`, `get_channel`.
+- **Writes**: `create_group`, `update_group`, `delete_group`, `add_group_member`, `remove_group_member`, `create_rule`, `update_rule`, `delete_rule`, `restore_rule_version`, `create_channel`, `update_channel`, `delete_channel`.
+
+Tools take **String** UUIDs (parsed inline with `parse_uuid`) and return **JSON strings** (serialised via `ok_json`). Two pragmatic dodges:
+
+- schemars 1.x doesn't ship a `JsonSchema` impl for `uuid::Uuid` — using `String` for IDs avoids a wider scoped opt-in across the codebase.
+- `rmcp`'s `Json<T>` wrapper requires `T: JsonSchema + Serialize + 'static`. None of our domain types impl `JsonSchema` (and we don't want to derive it on Rule / Monitor / GroupView etc. just for this), so we sidestep it by returning a JSON string. MCP clients see this as text content — exactly what tool output is meant to be.
+
+### Cross-tenant safety
+
+`McpAuth.user_id` is the **only** source of identity. Every tool passes it as the first argument to the underlying db function, all of which already filter `WHERE user_id = $1`. For `create_rule` / `update_rule`, the reused `handlers::rules::save_inner` (lifted to `pub`) runs the full validation chain:
+
+- field references in the condition tree resolve to a monitor / group **of this user**;
+- `target_monitor_id` / `target_rule_id` / `channel_id` belong to **this user**;
+- the DAG has no cycle.
+
+So a crafted MCP request can't reach another tenant any more than a crafted REST POST can.
+
+### What's not exposed (and why)
+
+- `POST /api/orgs/:id/webhook` — creates a webhook on a Clever Cloud organisation. Side-effects a third party + the user benefits from seeing exactly what's being created (the UI shows the existing webhooks before installing). Gated to the UI.
+- `DELETE monitor` and `monitor.acknowledged` — destructive on a CC resource. Gated to the UI.
+
+Both can be added behind a separate `write_destructive` scope later; the auth path already supports per-user scoping, only the tool surface would need extending.
+
+### Multi-instance
+
+The Streamable HTTP service uses `LocalSessionManager` (in-memory per backend instance). Sessions are short-lived (one tool invocation), so this is fine even when the LB routes consecutive requests to different instances — each session is fully self-contained. Authentication is via the shared Postgres (`users.mcp_token_hash`), so any instance sees the same allow-list.
+
+### Adding a new tool
+
+1. Add a `#[tool(description = "…")]` async method on `McpServer` in `backend/src/mcp/server.rs`.
+2. First line: `let user_id = auth_from_ctx(&ctx)?;`. Never trust an arg-supplied `user_id`.
+3. Use the existing db / handler helpers; don't write SQL or business logic inline.
+4. If the args contain a UUID, declare it as `String` and parse with `parse_uuid(&args.foo, "foo")?`.
+5. Wrap the return in `ok_json(...)`. Don't reach for `rmcp::Json` unless your return type already impls `JsonSchema`.
+
+That's it — the macros generate the JSON schema for inputs (from the `JsonSchema` derive on your Args struct) and the dispatch wiring.
 
 ## 16. Phase log pointer
 

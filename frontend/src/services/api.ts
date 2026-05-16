@@ -2,6 +2,8 @@ import type {
   CreateGroupInput,
   DryRunResult,
   GroupView,
+  McpStatus,
+  McpTokenCreated,
   Me,
   MetricSnapshotApi,
   Monitor,
@@ -127,4 +129,13 @@ export const api = {
     }),
   deleteChannel: (id: string) =>
     request<void>(`/api/channels/${id}`, { method: "DELETE" }),
+
+  getMcpStatus: () => request<McpStatus>("/api/mcp"),
+  enableMcp: () =>
+    request<McpStatus>("/api/mcp/enable", { method: "POST", body: "{}" }),
+  disableMcp: () =>
+    request<McpStatus>("/api/mcp/disable", { method: "POST", body: "{}" }),
+  generateMcpToken: () =>
+    request<McpTokenCreated>("/api/mcp/token", { method: "POST", body: "{}" }),
+  revokeMcpToken: () => request<void>("/api/mcp/token", { method: "DELETE" }),
 };

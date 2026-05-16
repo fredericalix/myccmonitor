@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod groups;
 mod handlers;
+mod mcp;
 mod metrics;
 mod monitors;
 mod notifications;
@@ -206,6 +207,12 @@ async fn main() -> Result<()> {
         });
     }
 
+    let mcp_router = mcp::build_router(state.clone());
+    tracing::info!(
+        endpoint = %format!("{}/mcp", cfg.public_base_url.trim_end_matches('/')),
+        "MCP endpoint mounted"
+    );
+
     let app = Router::new()
         .route("/health", get(health))
         .merge(auth::router())
@@ -213,8 +220,10 @@ async fn main() -> Result<()> {
         .merge(handlers::groups_router())
         .merge(handlers::rules_router())
         .merge(handlers::channels_router())
+        .merge(handlers::mcp_admin_router())
         .merge(webhooks::router())
         .merge(ws::router())
+        .merge(mcp_router)
         .layer(session_layer)
         .with_state(state);
 

@@ -252,6 +252,49 @@ Each transmitter row shows:
 
 If a transmitter keeps failing, fix the credentials or the URL and the count will reset on the next successful send. Blueprints referencing a disabled transmitter fail their `sendNotification` action and the blueprint is logged with outcome `error` — the firing still appears in the audit log, just without the side effect.
 
+## Workbench — connect AI agents (MCP)
+
+The **Workbench** entry in the sidebar (`/settings`) is where you plug AI agents — Claude Code, Claude.ai, ChatGPT custom GPTs, and any other [Model Context Protocol](https://modelcontextprotocol.io/) client — into myccmonitor. The agent can then read your monitors, write blueprints, manage groups, and configure transmitters on your behalf.
+
+### Enabling the MCP server
+
+The MCP server is **off by default**. Open Workbench, flip the toggle from **off** to **active**. Until you generate a token, no client can connect.
+
+### Generating a token
+
+Click **Generate token**. A dialog shows the full token — format `mccm_…` — and a Copy button. **This is the only time the raw token is displayed.** Store it in a password manager or paste it directly into your client's config. If you lose it, you'll need to regenerate (which invalidates the previous one).
+
+After the dialog closes you only see the token's **prefix** (e.g. `mccm_abc12345…`), its creation time, and last-used timestamp.
+
+### Disabling, regenerating, revoking
+
+- **Disable** the toggle to keep the token on file but reject all incoming MCP requests immediately.
+- **Regenerate** creates a fresh token and invalidates the old one — useful if a token leaked or you want to rotate.
+- **Revoke** (trash icon) wipes the token entirely. The toggle stays where it is.
+
+### Connecting a client
+
+The Workbench panel includes a **How to connect a client** disclosure with copy-paste-ready snippets for:
+
+- **Claude Code** — `claude mcp add --transport http myccmonitor https://<your-base-url>/mcp --header "Authorization: Bearer mccm_…"`
+- **Claude.ai** custom integrations — paste the endpoint URL + `Authorization: Bearer mccm_…` header.
+- **ChatGPT** custom GPT actions — same endpoint + bearer.
+
+### What an agent can do
+
+The MCP surface mirrors the REST API:
+
+- **Read**: list orgs, monitors, snapshots, groups, blueprints, channels, recent firings, blueprint versions.
+- **Write**: create/update/delete groups, blueprints, channels; manage group members; restore a blueprint version; dry-run (`test_rule`) and debug (`debug_rule`) a blueprint.
+
+Two things are **deliberately not exposed**: setting up a Clever Cloud webhook (gets gated through the UI to make sure you see what's being created on your CC account) and deleting a monitor (which is a destructive CC-level operation). Use the UI for both.
+
+### Security model
+
+- The token is hashed (SHA-256) before storage — myccmonitor never holds the raw bytes after generation.
+- Every MCP tool call is scoped to **your** user_id, taken from the validated token. The agent cannot pass a different user_id, and cannot reach other tenants' data.
+- Toggle off = global kill switch: every request is rejected with `401 Unauthorized`, regardless of which token is presented.
+
 ## Theme
 
 The Forge runs in a single locked dark theme. The previous light/warm pastel theme has been retired so the metaphor stays consistent — entering the workshop is a deliberate shift away from the corporate dashboard look. There is no theme toggle.

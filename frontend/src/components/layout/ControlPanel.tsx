@@ -126,6 +126,11 @@ export function ControlPanel() {
             icon={<PaperPlaneTilt weight="duotone" size={16} />}
             label="Relay tower"
           />
+          <ControlPanelLink
+            href="/settings"
+            icon={<GearSix weight="duotone" size={16} />}
+            label="Workbench"
+          />
         </nav>
 
         <SectionLabel className="mt-6">Resources</SectionLabel>
