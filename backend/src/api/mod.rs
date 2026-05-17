@@ -2,4 +2,4 @@
 
 pub mod cc_client;
 
-pub use cc_client::{CcClient, CcOrganisation, SUBSCRIBED_EVENTS};
+pub use cc_client::{CcClient, SUBSCRIBED_EVENTS};

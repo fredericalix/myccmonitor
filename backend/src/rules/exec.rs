@@ -21,33 +21,29 @@ pub const MAX_CHAIN_DEPTH: u32 = 8;
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
-    MonitorUpdate { monitor_id: Uuid },
     RuleChain { from_rule_id: Uuid },
     Poll { monitor_id: Uuid },
     Webhook,
     Escalation { from_rule_id: Uuid },
-    Test,
 }
 
 impl Trigger {
     pub fn kind(&self) -> &'static str {
         match self {
-            Trigger::MonitorUpdate { .. } => "monitor_update",
             Trigger::RuleChain { .. } => "rule_chain",
             Trigger::Poll { .. } => "poll",
             Trigger::Webhook => "webhook",
             Trigger::Escalation { .. } => "escalation",
-            Trigger::Test => "test",
         }
     }
 
     pub fn ref_id(&self) -> Option<Uuid> {
         match self {
-            Trigger::MonitorUpdate { monitor_id } | Trigger::Poll { monitor_id } => Some(*monitor_id),
+            Trigger::Poll { monitor_id } => Some(*monitor_id),
             Trigger::RuleChain { from_rule_id } | Trigger::Escalation { from_rule_id } => {
                 Some(*from_rule_id)
             }
-            _ => None,
+            Trigger::Webhook => None,
         }
     }
 }

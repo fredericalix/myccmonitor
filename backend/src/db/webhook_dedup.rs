@@ -30,9 +30,3 @@ pub async fn try_record(
     Ok(inserted)
 }
 
-pub async fn purge_expired(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    let res = sqlx::query("DELETE FROM webhook_dedup WHERE expires_at < now()")
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected())
-}

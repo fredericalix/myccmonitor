@@ -7,7 +7,7 @@ pub mod escalations;
 pub mod message;
 pub mod producer;
 
-pub use escalations::{EscalationMessage, EscalationProducer};
+pub use escalations::EscalationProducer;
 pub use message::BusMessage;
 pub use producer::WebhookProducer;
 

@@ -92,7 +92,6 @@ async fn poll_user_org(
     let pool = &state.pool;
     let cfg = state.cfg.as_ref();
     let http = &state.http;
-    let token_cache = state.warp10_token_cache.as_ref();
 
     let user = db::users::find_by_id(pool, user_id)
         .await?

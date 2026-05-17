@@ -61,13 +61,3 @@ pub async fn list_recent_for_rule(
     .await
 }
 
-pub async fn purge_older_than(
-    pool: &PgPool,
-    cutoff: DateTime<Utc>,
-) -> Result<u64, sqlx::Error> {
-    let res = sqlx::query("DELETE FROM rule_firings WHERE fired_at < $1")
-        .bind(cutoff)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected())
-}

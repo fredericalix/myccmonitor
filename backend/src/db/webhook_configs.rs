@@ -56,20 +56,6 @@ pub async fn find_by_token(
         .await
 }
 
-pub async fn find_for_user_org(
-    pool: &PgPool,
-    user_id: Uuid,
-    cc_org_id: &str,
-) -> Result<Option<WebhookConfig>, sqlx::Error> {
-    sqlx::query_as::<_, WebhookConfig>(
-        "SELECT * FROM webhook_configs WHERE user_id = $1 AND cc_org_id = $2",
-    )
-    .bind(user_id)
-    .bind(cc_org_id)
-    .fetch_optional(pool)
-    .await
-}
-
 pub async fn list_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<WebhookConfig>, sqlx::Error> {
     sqlx::query_as::<_, WebhookConfig>("SELECT * FROM webhook_configs WHERE user_id = $1")
         .bind(user_id)

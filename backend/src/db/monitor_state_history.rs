@@ -55,14 +55,3 @@ pub async fn state_held_for(
         _ => Ok(false),
     }
 }
-
-pub async fn purge_older_than(
-    pool: &PgPool,
-    cutoff: DateTime<Utc>,
-) -> Result<u64, sqlx::Error> {
-    let res = sqlx::query("DELETE FROM monitor_state_history WHERE changed_at < $1")
-        .bind(cutoff)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected())
-}

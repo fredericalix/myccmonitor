@@ -183,16 +183,3 @@ pub async fn remove_member(
     .await?;
     Ok(res.rows_affected())
 }
-
-pub async fn list_manual_member_ids(
-    pool: &PgPool,
-    group_id: Uuid,
-) -> Result<Vec<Uuid>, sqlx::Error> {
-    let rows: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT monitor_id FROM monitor_group_members WHERE group_id = $1",
-    )
-    .bind(group_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
-}

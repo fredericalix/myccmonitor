@@ -5,7 +5,7 @@
 
 use crate::db::alerts;
 use crate::db::monitors::Monitor;
-use crate::db::notification_channels::{self, NotificationChannel};
+use crate::db::notification_channels;
 use crate::db::rules::Rule;
 use crate::notifications::adapters::{RenderedMessage, for_kind};
 use crate::notifications::template;
@@ -15,15 +15,6 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::time::sleep;
 use uuid::Uuid;
-
-#[derive(Debug, Clone)]
-pub struct NotifContext<'a> {
-    pub rule: &'a Rule,
-    pub monitor: Option<&'a Monitor>,
-    pub trigger_kind: &'a str,
-    pub trigger_ref: Option<Uuid>,
-    pub level: &'a str,
-}
 
 pub async fn dispatch(
     state: &AppState,

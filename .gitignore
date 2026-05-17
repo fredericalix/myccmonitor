@@ -38,3 +38,7 @@ Thumbs.db
 
 # Superpowers brainstorm artifacts
 .superpowers/
+
+
+# Claude Code session artefacts
+.claude/

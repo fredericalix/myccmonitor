@@ -20,9 +20,6 @@ pub enum AppError {
     #[error("Clever Cloud API error: {0}")]
     CcApi(String),
 
-    #[error("Warp10 error: {0}")]
-    Warp10(String),
-
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -35,7 +32,6 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::CcApi(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
-            AppError::Warp10(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::Internal(err) => {
                 tracing::error!(error = ?err, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())

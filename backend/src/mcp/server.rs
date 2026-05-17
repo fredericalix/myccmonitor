@@ -5,7 +5,6 @@
 //! `user_id` is **always** taken from the `McpAuth` extension injected by
 //! `crate::mcp::auth::mcp_auth_layer`; tool inputs cannot name a `user_id`.
 
-use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::ErrorCode;
 use rmcp::service::RequestContext;
@@ -33,15 +32,11 @@ use crate::state::AppState;
 #[derive(Clone)]
 pub struct McpServer {
     pub state: AppState,
-    tool_router: ToolRouter<Self>,
 }
 
 impl McpServer {
     pub fn new(state: AppState) -> Self {
-        Self {
-            state,
-            tool_router: Self::tool_router(),
-        }
+        Self { state }
     }
 }
 

@@ -5,4 +5,4 @@ pub mod adapters;
 pub mod dispatch;
 pub mod template;
 
-pub use dispatch::{NotifContext, dispatch};
+pub use dispatch::dispatch;

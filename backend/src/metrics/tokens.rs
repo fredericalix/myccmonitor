@@ -5,7 +5,6 @@
 use crate::api::cc_client::CcClient;
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
-use std::sync::Arc;
 use uuid::Uuid;
 
 const TOKEN_TTL: Duration = Duration::hours(4);
@@ -15,15 +14,9 @@ pub struct TokenCache {
     inner: DashMap<(Uuid, String), (String, DateTime<Utc>)>,
 }
 
-pub type SharedTokenCache = Arc<TokenCache>;
-
 impl TokenCache {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn invalidate(&self, user_id: Uuid, cc_org_id: &str) {
-        self.inner.remove(&(user_id, cc_org_id.to_string()));
     }
 }
 
