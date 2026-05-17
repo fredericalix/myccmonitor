@@ -11,9 +11,16 @@ const nextConfig: NextConfig = {
       { source: "/ws", destination: `${BACKEND}/ws` },
       { source: "/mcp", destination: `${BACKEND}/mcp` },
       { source: "/mcp/:path*", destination: `${BACKEND}/mcp/:path*` },
-      // OAuth discovery — the MCP SDK probes these and chokes on Next's 404
-      // HTML page. Backend returns proper 404 JSON instead.
+      // OAuth/OIDC/DCR discovery — the MCP SDK probes ALL of these even
+      // with a static Bearer configured. Backend returns proper 404 JSON;
+      // without these rewrites Next's HTML 404 makes the SDK barf a
+      // JSON-parse error in the client. Order matters: most-specific
+      // first (left-to-right).
       { source: "/.well-known/:path*", destination: `${BACKEND}/.well-known/:path*` },
+      { source: "/register", destination: `${BACKEND}/register` },
+      { source: "/authorize", destination: `${BACKEND}/authorize` },
+      { source: "/token", destination: `${BACKEND}/token` },
+      { source: "/oauth/:path*", destination: `${BACKEND}/oauth/:path*` },
     ];
   },
 };
