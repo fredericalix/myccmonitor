@@ -29,6 +29,17 @@ pub async fn mcp_auth_layer(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
+    // Diagnostic fields so we can attribute periodic unauthenticated probes
+    // (CC health checks, scanners, stale clients) when they show up.
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let user_agent = req
+        .headers()
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_string();
+
     let raw = match req
         .headers()
         .get(AUTHORIZATION)
@@ -36,13 +47,13 @@ pub async fn mcp_auth_layer(
         .and_then(|s| s.strip_prefix("Bearer "))
     {
         Some(t) if t.starts_with(token::TOKEN_PREFIX) => t.to_string(),
-        _ => return unauthorized("missing or malformed Bearer token"),
+        _ => return rejected("missing_or_malformed_bearer", &method, &path, &user_agent),
     };
 
     let hash = token::hash(&raw);
     let user_id = match users::find_by_mcp_token_hash(&state.pool, &hash).await {
         Ok(Some(id)) => id,
-        Ok(None) => return unauthorized("invalid token or MCP disabled"),
+        Ok(None) => return rejected("invalid_token_or_mcp_disabled", &method, &path, &user_agent),
         Err(err) => {
             tracing::error!(error = ?err, "mcp auth db lookup failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
@@ -63,11 +74,24 @@ pub async fn mcp_auth_layer(
     next.run(req).await
 }
 
-fn unauthorized(msg: &str) -> Response {
-    tracing::warn!(reason = msg, "mcp request rejected");
+fn rejected(
+    reason: &str,
+    method: &axum::http::Method,
+    path: &str,
+    user_agent: &str,
+) -> Response {
+    // Unauthenticated probes are expected (CC health checks, scanners,
+    // disconnected clients reconnecting). Log at info so they stay visible
+    // for a few days while we attribute the 60s-cadence requests; bumped
+    // to warn when the *token* is actually wrong (real auth failure).
+    if reason == "missing_or_malformed_bearer" {
+        tracing::info!(%method, path, user_agent, reason, "mcp request rejected");
+    } else {
+        tracing::warn!(%method, path, user_agent, reason, "mcp request rejected");
+    }
     (
         StatusCode::UNAUTHORIZED,
-        Json(json!({"error": msg})),
+        Json(json!({"error": reason})),
     )
         .into_response()
 }
