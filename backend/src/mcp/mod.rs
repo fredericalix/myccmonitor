@@ -12,12 +12,16 @@ pub mod token;
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::Router;
+use axum::http::StatusCode;
 use axum::middleware;
+use axum::routing::get;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::tower::{
     StreamableHttpServerConfig, StreamableHttpService,
 };
+use serde_json::json;
 
 use crate::state::AppState;
 
@@ -45,4 +49,21 @@ pub fn build_router(state: AppState) -> Router<AppState> {
     Router::new()
         .route_service("/mcp", service)
         .route_layer(middleware::from_fn_with_state(state, auth::mcp_auth_layer))
+        // OAuth discovery endpoints. The MCP SDK auto-probes these even when
+        // the user has configured a static Bearer header; if they 404 with
+        // HTML (default Next.js response) the SDK throws a noisy JSON-parse
+        // error in the client. Returning `404 application/json` lets the SDK
+        // see "no OAuth advertised" cleanly and fall back to the Bearer.
+        .route("/.well-known/oauth-protected-resource", get(oauth_metadata_404))
+        .route("/.well-known/oauth-authorization-server", get(oauth_metadata_404))
+}
+
+async fn oauth_metadata_404() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "not_found",
+            "error_description": "OAuth is not used by this MCP server. Authenticate with a Bearer token via the Authorization header."
+        })),
+    )
 }

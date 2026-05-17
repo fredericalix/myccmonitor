@@ -11,6 +11,9 @@ const nextConfig: NextConfig = {
       { source: "/ws", destination: `${BACKEND}/ws` },
       { source: "/mcp", destination: `${BACKEND}/mcp` },
       { source: "/mcp/:path*", destination: `${BACKEND}/mcp/:path*` },
+      // OAuth discovery — the MCP SDK probes these and chokes on Next's 404
+      // HTML page. Backend returns proper 404 JSON instead.
+      { source: "/.well-known/:path*", destination: `${BACKEND}/.well-known/:path*` },
     ];
   },
 };
