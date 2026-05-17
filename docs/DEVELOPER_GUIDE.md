@@ -718,8 +718,16 @@ The Streamable HTTP service uses `LocalSessionManager` (in-memory per backend in
 3. Use the existing db / handler helpers; don't write SQL or business logic inline.
 4. If the args contain a UUID, declare it as `String` and parse with `parse_uuid(&args.foo, "foo")?`.
 5. Wrap the return in `ok_json(...)`. Don't reach for `rmcp::Json` unless your return type already impls `JsonSchema`.
+6. **Every `serde_json::Value` field on the `Args` struct needs a `///` doc-comment.** Without it, schemars emits the JSON Schema shorthand `"property": true` which Claude Code's zod validator rejects with `code: "custom", message: "Invalid input"` — refusing to load the whole tools list. With a doc-comment, schemars emits a proper `{ "description": "..." }` object. See §15.b "Gotchas" below.
 
 That's it — the macros generate the JSON schema for inputs (from the `JsonSchema` derive on your Args struct) and the dispatch wiring.
+
+### Gotchas (post-deploy hotfixes that bit us)
+
+- **rmcp DNS-rebinding allowlist.** `StreamableHttpServerConfig::default()` ships `allowed_hosts = ["localhost","127.0.0.1","::1"]` as a guard for locally-bound MCP servers. On a public TLS endpoint with our own Bearer auth this rejects every request with `403 Forbidden: Host header is not allowed`. We call `.disable_allowed_hosts()` in `mcp/mod.rs`. Don't ship the default.
+- **`Router::layer` vs `Router::route_layer`.** The Bearer middleware on `/mcp` must use `route_layer` so it only fires on `/mcp` matches. With plain `layer`, the middleware applies to *every* request reaching the merged router — CC's `Ruby`-UA `GET /` health probe gets caught and logs a 401 every 60 s.
+- **OAuth-discovery 404-JSON sink.** Even with a static `Authorization: Bearer …` header configured, the MCP TS SDK probes `/.well-known/oauth-protected-resource[/{*rest}]`, `/.well-known/oauth-authorization-server[/{*rest}]`, `/.well-known/openid-configuration`, `/register`, `/oauth/register`, `/authorize`, `/oauth/authorize`, `/token`, `/oauth/token` — looking for OAuth/DCR metadata to fall back on. Next.js's default HTML 404 page on those paths triggers `SyntaxError: Unrecognized token '<'` in the client (cosmetic — Bearer auth keeps working — but noisy on every reconnect). The backend handles the lot via `oauth_metadata_404`, returning `404 application/json`; Next rewrites the matching prefixes to the backend.
+- **schemars `true` shorthand vs Claude Code zod.** Already covered in step 6 above — repeated here because the failure mode is "the entire tools list silently refuses to load", which is hard to spot without the SDK's verbose error.
 
 ## 16. Phase log pointer
 
