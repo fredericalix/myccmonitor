@@ -173,7 +173,12 @@ pub struct RuleUpdateArgs {
     pub name: String,
     #[serde(default = "default_true")]
     pub is_enabled: bool,
+    /// Recursive condition tree. See `Condition` enum in CLAUDE.md §10.1 —
+    /// either `{ "type": "comparison", "field": "monitor:<uuid>:state",
+    /// "operator": "eq", "value": "critical" }` or `{ "type": "logical",
+    /// "op": "and", "children": [ … ] }`.
     pub condition: serde_json::Value,
+    /// List of actions. See `Action` enum in CLAUDE.md §10.2.
     pub actions: serde_json::Value,
     #[serde(default = "default_cooldown")]
     pub cooldown_seconds: i32,
@@ -203,8 +208,10 @@ pub struct ChannelCreateArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChannelUpdateArgs {
     pub channel_id: String,
+    /// One of `email`, `slack`, `discord`, `webhook`.
     pub kind: String,
     pub name: String,
+    /// Kind-specific JSON. See CLAUDE.md §13.
     pub config: serde_json::Value,
     #[serde(default = "default_true")]
     pub enabled: bool,
