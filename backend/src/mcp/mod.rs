@@ -37,7 +37,12 @@ pub fn build_router(state: AppState) -> Router<AppState> {
         config,
     );
 
+    // `route_layer` (NOT `layer`) is critical: the latter would apply the
+    // Bearer middleware to every request reaching the merged top-level
+    // router — including CC's `GET /` Ruby health probe, which would log
+    // a noisy 401 every 60 s. `route_layer` scopes the middleware to
+    // requests that actually match a route on this Router, i.e. /mcp only.
     Router::new()
         .route_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(state, auth::mcp_auth_layer))
+        .route_layer(middleware::from_fn_with_state(state, auth::mcp_auth_layer))
 }
