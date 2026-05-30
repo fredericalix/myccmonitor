@@ -45,8 +45,14 @@ export default function EditRulePage() {
           api.listRules().catch(() => []),
           api.listChannels().catch(() => []),
         ]);
+        const failedOrgs: string[] = [];
         const monitorsByOrg = await Promise.all(
-          orgs.map((o) => api.listMonitors(o.cc_org_id).catch(() => [])),
+          orgs.map((o) =>
+            api.listMonitors(o.cc_org_id).catch(() => {
+              failedOrgs.push(o.name ?? o.cc_org_id);
+              return [] as Monitor[];
+            }),
+          ),
         );
         if (!active) return;
         setRule(r);
@@ -56,6 +62,14 @@ export default function EditRulePage() {
           rules: rules as Rule[],
           channels: channels as NotificationChannel[],
         });
+        if (failedOrgs.length) {
+          toast.warning(
+            `Couldn't load monitors for ${failedOrgs.length} org${failedOrgs.length === 1 ? "" : "s"}`,
+            {
+              description: `${failedOrgs.join(", ")}. The target list may be incomplete.`,
+            },
+          );
+        }
       } catch (err: unknown) {
         if (!active) return;
         if (err instanceof ApiError && err.status === 401) {

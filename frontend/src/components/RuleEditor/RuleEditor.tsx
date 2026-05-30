@@ -184,6 +184,25 @@ function ruleToGraph(
   return layout(nodes, edges);
 }
 
+// Keys that belong to each action type. Switching an action's type in the UI
+// leaves stale keys behind on the node's data (e.g. a `state` left over from
+// set_monitor_state); only the keys valid for the chosen type are serialized.
+const ACTION_KEYS: Record<string, string[]> = {
+  set_monitor_state: ["target_monitor_id", "state", "message", "acknowledged"],
+  send_notification: ["channel_id", "message", "subject"],
+  escalate: ["delay_seconds", "target_rule_id"],
+};
+
+function pruneAction(data: Record<string, unknown>): Action {
+  const type = String(data.type ?? "");
+  const keep = ACTION_KEYS[type] ?? [];
+  const out: Record<string, unknown> = { type };
+  for (const k of keep) {
+    if (data[k] !== undefined) out[k] = data[k];
+  }
+  return out as unknown as Action;
+}
+
 function graphToRule(
   nodes: Node[],
   edges: Edge[],
@@ -254,9 +273,7 @@ function graphToRule(
   for (const e of actionEdges) {
     const an = nodes.find((x) => x.id === e.target && x.type === "actionNode");
     if (!an) continue;
-    const copy = { ...(an.data as Record<string, unknown>) };
-    delete copy.onChange;
-    actions.push(copy as unknown as Action);
+    actions.push(pruneAction(an.data as Record<string, unknown>));
   }
   if (actions.length === 0) {
     throw new Error("at least one Action node must connect to RuleOutput");
@@ -290,9 +307,11 @@ function RuleEditorInner({
   const [isEnabled, setIsEnabled] = useState(initialRule?.is_enabled ?? true);
   const [cooldown, setCooldown] = useState(initialRule?.cooldown_seconds ?? 300);
   const [showLegend, setShowLegend] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   const handleNodeChange = useCallback(
     (nodeId: string, key: string, value: unknown) => {
+      setDirty(true);
       setNodes((curr) =>
         curr.map((n) =>
           n.id === nodeId ? { ...n, data: { ...n.data, [key]: value } } : n,
@@ -306,7 +325,20 @@ function RuleEditorInner({
     const { nodes: ns, edges: es } = ruleToGraph(initialRule, handleNodeChange);
     setNodes(ns);
     setEdges(es);
+    // `dirty` starts false and this effect only runs at mount / when a fresh
+    // initialRule arrives (before any user edit), so no reset is needed here.
   }, [initialRule, handleNodeChange, setNodes, setEdges]);
+
+  // Warn before leaving with unsaved edits (covers tab close / hard nav).
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
 
   const onConnect = useCallback(
     (c: Connection) => {
@@ -316,6 +348,7 @@ function RuleEditorInner({
         markerEnd: { type: MarkerType.ArrowClosed },
         style: { stroke: "var(--color-accent)" },
       };
+      setDirty(true);
       setEdges((es) => addEdge(newEdge, es));
     },
     [setEdges],
@@ -325,6 +358,7 @@ function RuleEditorInner({
     (changes: NodeChange[]) => {
       changes.forEach((ch) => {
         if (ch.type === "remove" && "id" in ch) {
+          setDirty(true);
           setEdges((es) =>
             es.filter((e) => e.source !== ch.id && e.target !== ch.id),
           );
@@ -355,6 +389,7 @@ function RuleEditorInner({
           break;
       }
       const newNode: Node = { id, type, position: pos, data: baseData };
+      setDirty(true);
       setNodes((curr) => [...curr, newNode]);
     },
     [rf, handleNodeChange, setNodes],
@@ -375,6 +410,7 @@ function RuleEditorInner({
     try {
       const input = graphToRule(nodes, edges, name.trim(), isEnabled, cooldown);
       await onSave(input);
+      setDirty(false);
     } catch (e: unknown) {
       toast.error("Validation failed", {
         description: e instanceof Error ? e.message : String(e),
@@ -391,7 +427,10 @@ function RuleEditorInner({
         <div className="flex flex-wrap items-center gap-3 border-b border-border bg-bg/50 px-4 py-3">
           <Input
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setDirty(true);
+              setName(e.target.value);
+            }}
             placeholder="Rule name"
             className="flex-1 min-w-[200px]"
           />
@@ -399,7 +438,10 @@ function RuleEditorInner({
             <input
               type="checkbox"
               checked={isEnabled}
-              onChange={(e) => setIsEnabled(e.target.checked)}
+              onChange={(e) => {
+                setDirty(true);
+                setIsEnabled(e.target.checked);
+              }}
               className="accent-accent h-4 w-4"
             />
             enabled
@@ -410,12 +452,20 @@ function RuleEditorInner({
               type="number"
               min="0"
               value={cooldown}
-              onChange={(e) => setCooldown(parseInt(e.target.value, 10) || 0)}
+              onChange={(e) => {
+                setDirty(true);
+                setCooldown(parseInt(e.target.value, 10) || 0);
+              }}
               className="w-20 rounded-md border border-border bg-elevated px-2 py-1 text-xs text-text"
             />
             s
           </label>
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            {dirty ? (
+              <span className="text-[11px] font-medium text-warning whitespace-nowrap">
+                ● unsaved
+              </span>
+            ) : null}
             {onDebug ? (
               <Button variant="secondary" size="sm" onClick={onDebug} disabled={busy}>
                 <Bug weight="bold" size={14} />

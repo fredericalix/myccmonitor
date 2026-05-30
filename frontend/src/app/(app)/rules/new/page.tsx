@@ -31,21 +31,36 @@ export default function NewRulePage() {
     (async () => {
       try {
         const orgs = await api.listOrgs();
+        const failedOrgs: string[] = [];
         const monitorsByOrg = await Promise.all(
-          orgs.map((o) => api.listMonitors(o.cc_org_id).catch(() => [])),
+          orgs.map((o) =>
+            api.listMonitors(o.cc_org_id).catch(() => {
+              failedOrgs.push(o.name ?? o.cc_org_id);
+              return [] as Monitor[];
+            }),
+          ),
         );
         const [groups, rules, channels] = await Promise.all([
           api.listGroups().catch(() => []),
           api.listRules().catch(() => []),
           api.listChannels().catch(() => []),
         ]);
-        if (active)
+        if (active) {
           setData({
             monitors: monitorsByOrg.flat(),
             groups: groups as GroupView[],
             rules: rules as Rule[],
             channels: channels as NotificationChannel[],
           });
+          if (failedOrgs.length) {
+            toast.warning(
+              `Couldn't load monitors for ${failedOrgs.length} org${failedOrgs.length === 1 ? "" : "s"}`,
+              {
+                description: `${failedOrgs.join(", ")}. The target list may be incomplete.`,
+              },
+            );
+          }
+        }
       } catch (err: unknown) {
         if (!active) return;
         if (err instanceof ApiError && err.status === 401) {

@@ -85,7 +85,7 @@ impl EscalationProducer {
         // before the user-facing action returns. If publish fails, the receipt
         // future logs in the background. (Phase 6 actions already returned
         // success synchronously; Phase 8 keeps that latency budget.)
-        let _ = receipt;
+        drop(receipt);
         Ok(())
     }
 }

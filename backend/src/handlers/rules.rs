@@ -241,47 +241,48 @@ async fn validate_action_refs(
     user_id: Uuid,
     actions: &[Action],
 ) -> Result<(), AppError> {
+    // Collect the distinct ids referenced per ref-kind, then verify each set
+    // with a single `= ANY($1)` query rather than one round-trip per action.
+    let mut monitor_ids = Vec::new();
+    let mut rule_ids = Vec::new();
+    let mut channel_ids = Vec::new();
     for action in actions {
         match action {
-            Action::SetMonitorState {
-                target_monitor_id, ..
-            } => {
-                let exists: Option<bool> = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM monitors WHERE id = $1 AND user_id = $2)",
-                )
-                .bind(target_monitor_id)
-                .bind(user_id)
-                .fetch_optional(&state.pool)
-                .await?;
-                if !exists.unwrap_or(false) {
-                    return Err(AppError::Forbidden);
-                }
-            }
-            Action::Escalate { target_rule_id, .. } => {
-                let exists: Option<bool> = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM rules WHERE id = $1 AND user_id = $2)",
-                )
-                .bind(target_rule_id)
-                .bind(user_id)
-                .fetch_optional(&state.pool)
-                .await?;
-                if !exists.unwrap_or(false) {
-                    return Err(AppError::Forbidden);
-                }
-            }
-            Action::SendNotification { channel_id, .. } => {
-                let exists: Option<bool> = sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM notification_channels WHERE id = $1 AND user_id = $2)",
-                )
-                .bind(channel_id)
-                .bind(user_id)
-                .fetch_optional(&state.pool)
-                .await?;
-                if !exists.unwrap_or(false) {
-                    return Err(AppError::Forbidden);
-                }
-            }
+            Action::SetMonitorState { target_monitor_id, .. } => monitor_ids.push(*target_monitor_id),
+            Action::Escalate { target_rule_id, .. } => rule_ids.push(*target_rule_id),
+            Action::SendNotification { channel_id, .. } => channel_ids.push(*channel_id),
         }
+    }
+
+    all_owned(state, user_id, "monitors", &mut monitor_ids).await?;
+    all_owned(state, user_id, "rules", &mut rule_ids).await?;
+    all_owned(state, user_id, "notification_channels", &mut channel_ids).await?;
+    Ok(())
+}
+
+/// Returns Ok only if every id in `ids` exists in `table` for `user_id`.
+/// `ids` is sorted/deduped in place. `table` is a hard-coded literal from the
+/// caller — never user input — so interpolating it into the query is safe.
+async fn all_owned(
+    state: &AppState,
+    user_id: Uuid,
+    table: &str,
+    ids: &mut Vec<Uuid>,
+) -> Result<(), AppError> {
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let found: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM {table} WHERE user_id = $1 AND id = ANY($2)"
+    ))
+    .bind(user_id)
+    .bind(&*ids)
+    .fetch_one(&state.pool)
+    .await?;
+    if (found as usize) != ids.len() {
+        return Err(AppError::Forbidden);
     }
     Ok(())
 }

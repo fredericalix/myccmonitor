@@ -1,8 +1,10 @@
 "use client";
 
 import { Handle, NodeProps, Position } from "reactflow";
+import { useState } from "react";
 import {
   ArrowsClockwise,
+  BracketsCurly,
   Lightning,
   PaperPlaneTilt,
   Warning,
@@ -11,6 +13,37 @@ import { useEditorData } from "../EditorContext";
 import { cn } from "@/lib/cn";
 
 type ActionKind = "set_monitor_state" | "send_notification" | "escalate";
+
+// Fields that belong to each action type — used to drop now-irrelevant values
+// from the node when the user switches type, so stale data isn't carried over.
+const FIELDS_BY_KIND: Record<ActionKind, string[]> = {
+  set_monitor_state: ["target_monitor_id", "state", "message", "acknowledged"],
+  send_notification: ["channel_id", "message", "subject"],
+  escalate: ["delay_seconds", "target_rule_id"],
+};
+const ALL_ACTION_FIELDS = [
+  "target_monitor_id",
+  "state",
+  "message",
+  "acknowledged",
+  "channel_id",
+  "subject",
+  "delay_seconds",
+  "target_rule_id",
+];
+
+// Variables and helpers available to handlebars templates, matching the
+// context built in `notifications/dispatch.rs`.
+const TEMPLATE_VARS = [
+  "{{monitor.display_name}}",
+  "{{monitor.current_state}}",
+  "{{monitor.current_message}}",
+  "{{monitor.kind}}",
+  "{{rule.name}}",
+  "{{trigger.kind}}",
+  "{{format_state monitor.current_state}}",
+  "{{relative_time monitor.current_state_since}}",
+];
 
 interface ActionData {
   type: ActionKind;
@@ -57,8 +90,23 @@ const KIND_META: Record<
 export default function ActionNode({ id, data }: NodeProps<ActionData>) {
   const { monitors, rules, channels } = useEditorData();
   const onChange = (key: string, value: unknown) => data.onChange(id, key, value);
+  const [showVars, setShowVars] = useState(false);
+
+  // Switch type and drop any field that doesn't belong to the new type, so
+  // stale values (e.g. a leftover `state`) aren't serialized or shown later.
+  const onTypeChange = (newType: ActionKind) => {
+    const keep = new Set(FIELDS_BY_KIND[newType]);
+    for (const k of ALL_ACTION_FIELDS) {
+      if (!keep.has(k) && data[k as keyof ActionData] !== undefined) {
+        onChange(k, undefined);
+      }
+    }
+    onChange("type", newType);
+  };
 
   const meta = KIND_META[data.type];
+  const templated =
+    data.type === "set_monitor_state" || data.type === "send_notification";
 
   let invalid = false;
   if (data.type === "set_monitor_state") {
@@ -91,13 +139,38 @@ export default function ActionNode({ id, data }: NodeProps<ActionData>) {
 
       <select
         value={data.type}
-        onChange={(e) => onChange("type", e.target.value as ActionKind)}
+        onChange={(e) => onTypeChange(e.target.value as ActionKind)}
         className={cn(fieldCls, "mb-2 font-medium")}
       >
         <option value="set_monitor_state">Set monitor state</option>
         <option value="send_notification">Send notification</option>
         <option value="escalate">Escalate (delayed)</option>
       </select>
+
+      {templated ? (
+        <div className="mb-2">
+          <button
+            type="button"
+            onClick={() => setShowVars((s) => !s)}
+            className="flex items-center gap-1 text-[10px] font-medium text-text-subtle hover:text-accent-strong transition-colors"
+          >
+            <BracketsCurly weight="bold" size={11} />
+            {showVars ? "Hide" : "Template"} variables
+          </button>
+          {showVars ? (
+            <div className="mt-1 flex flex-wrap gap-1 rounded-lg border border-border bg-bg/60 p-1.5">
+              {TEMPLATE_VARS.map((v) => (
+                <code
+                  key={v}
+                  className="rounded bg-elevated px-1 py-0.5 text-[9px] text-text-muted"
+                >
+                  {v}
+                </code>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {data.type === "set_monitor_state" ? (
         <>

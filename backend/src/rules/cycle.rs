@@ -57,8 +57,8 @@ pub async fn check_no_cycle(
     rules.insert(
         pending_id,
         RuleSpec {
-            deps: dependencies::extract(&pending.condition),
-            writes: writes_of(&pending.actions),
+            deps: dependencies::extract(pending.condition),
+            writes: writes_of(pending.actions),
         },
     );
 

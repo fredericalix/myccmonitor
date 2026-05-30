@@ -32,6 +32,7 @@ const VERSIONS_PER_RULE: i64 = 5;
 
 /// Save (insert or update) a rule + its dependencies index + a version row.
 /// Caller MUST have validated cycle absence and cross-user references.
+#[allow(clippy::too_many_arguments)]
 pub async fn save(
     pool: &PgPool,
     user_id: Uuid,

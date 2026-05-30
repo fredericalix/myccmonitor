@@ -31,6 +31,35 @@ const GROUP_PROPS = [
 
 const STATE_VALUES = ["ok", "warning", "critical", "unknown"] as const;
 
+// Numeric properties (metric readings + group counts) accept ordering ops.
+const NUMERIC_PROPS = new Set([
+  "cpu",
+  "mem",
+  "disk",
+  "net_in",
+  "net_out",
+  "critical_count",
+  "warning_count",
+  "ok_count",
+  "unknown_count",
+  "total_count",
+]);
+
+// Properties where a `for X` duration is meaningful and implemented by the
+// backend evaluator (monitor state + metric thresholds). For everything else
+// the engine treats a duration as not-held, so we hide the input entirely.
+const DURATION_PROPS = new Set(["state", "cpu", "mem", "disk", "net_in", "net_out"]);
+
+// Operators that make sense for a given property type. Keeps users from
+// authoring e.g. `state > critical` that the backend would just reject.
+function allowedOps(prop: string): CompOp[] {
+  if (!prop) return Object.keys(OP_LABEL) as CompOp[];
+  if (prop === "state" || prop === "acknowledged") return ["eq", "neq"];
+  if (prop === "message") return ["eq", "neq", "contains", "not_contains"];
+  if (NUMERIC_PROPS.has(prop)) return ["eq", "neq", "gt", "gte", "lt", "lte"];
+  return Object.keys(OP_LABEL) as CompOp[];
+}
+
 interface ConditionData {
   field: string;
   operator: CompOp | "";
@@ -127,6 +156,15 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
     const v = e.target.value;
     setProp(v);
     emitField(kind, targetId, v);
+    // Reset the operator if it no longer fits the new property type.
+    if (data.operator && !allowedOps(v).includes(data.operator)) {
+      data.onChange(id, "operator", "");
+    }
+    // Clear a stale duration when the new property doesn't support one.
+    if (!DURATION_PROPS.has(v) && data.for_duration_seconds) {
+      setDurationText("");
+      data.onChange(id, "for_duration_seconds", undefined);
+    }
   };
 
   const onOperatorChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -300,7 +338,7 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
           className={fieldCls}
         >
           <option value="">— op —</option>
-          {(Object.keys(OP_LABEL) as CompOp[]).map((op) => (
+          {allowedOps(prop).map((op) => (
             <option key={op} value={op}>
               {OP_LABEL[op]}
             </option>
@@ -310,20 +348,22 @@ export default function ConditionNode({ id, data }: NodeProps<ConditionData>) {
 
       <div className="mb-1.5">{valueInput}</div>
 
-      <label className="relative flex items-center">
-        <Hourglass
-          weight="duotone"
-          size={12}
-          className="absolute left-2 text-text-subtle pointer-events-none"
-        />
-        <input
-          type="text"
-          value={durationText}
-          onChange={onDurationChange}
-          placeholder="for 5m (optional)"
-          className={cn(fieldCls, "pl-6 bg-bg/60")}
-        />
-      </label>
+      {DURATION_PROPS.has(prop) ? (
+        <label className="relative flex items-center">
+          <Hourglass
+            weight="duotone"
+            size={12}
+            className="absolute left-2 text-text-subtle pointer-events-none"
+          />
+          <input
+            type="text"
+            value={durationText}
+            onChange={onDurationChange}
+            placeholder="for 5m (optional)"
+            className={cn(fieldCls, "pl-6 bg-bg/60")}
+          />
+        </label>
+      ) : null}
 
       <Handle
         type="source"

@@ -105,6 +105,35 @@ pub async fn latest_per_metric(
     Ok(rows.into_iter().map(|r| (r.metric_name.clone(), r)).collect())
 }
 
+/// The most recent `limit` readings for one (monitor, metric), returned
+/// oldest-first. Powers metric `for X minutes` conditions in the evaluator:
+/// it needs samples from *before* the window start to anchor continuity, so a
+/// bounded recent-N fetch is used rather than a time-floored one. Bounded by
+/// `KEEP_N_PER_METRIC` in practice, so this is a small scan.
+pub async fn recent_readings(
+    pool: &PgPool,
+    monitor_id: Uuid,
+    metric_name: &str,
+    limit: i64,
+) -> Result<Vec<MetricReading>, sqlx::Error> {
+    let mut rows: Vec<MetricReading> = sqlx::query_as::<_, MetricReading>(
+        r#"
+        SELECT monitor_id, metric_name, ts, value
+        FROM metric_readings
+        WHERE monitor_id = $1 AND metric_name = $2
+        ORDER BY ts DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(monitor_id)
+    .bind(metric_name)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.reverse(); // oldest-first
+    Ok(rows)
+}
+
 /// Latest reading per (monitor, metric) across an entire org. Multi-tenant
 /// guarded by joining on monitors and filtering on user_id + cc_org_id.
 pub async fn latest_per_metric_for_org(

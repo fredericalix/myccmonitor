@@ -9,10 +9,10 @@ use crate::db::notification_channels::NotificationChannel;
 use crate::db::rule_firings::{self, RuleFiring};
 use crate::db::rules::Rule;
 use crate::groups::compute_view;
-use crate::rules::condition::{Action, CompOp, Condition, LogicalOp};
+use crate::rules::condition::{Action, Condition, LogicalOp};
 use crate::rules::dependencies;
-use crate::rules::evaluator::evaluate;
-use crate::rules::field::{self, FieldValue};
+use crate::rules::evaluator::{compare, evaluate};
+use crate::rules::field::{self, EvalCtx, FieldValue};
 use crate::state::AppState;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -84,14 +84,15 @@ pub async fn build(state: &AppState, user_id: Uuid, rule: &Rule) -> Result<RuleD
 
     // Live verdict (used both for the would_match flag and for the cooldown
     // hint; matches what `execute_rule` would do at this exact moment).
-    let would_match_now = evaluate(&state.pool, user_id, &condition).await?;
+    let ctx = EvalCtx::new(&state.pool, user_id);
+    let would_match_now = evaluate(&ctx, &condition).await?;
 
     // Cooldown state computation, mirrors execute_rule.
     let now = Utc::now();
     let cooldown = compute_cooldown(rule, now, would_match_now);
 
     // Walk the condition tree to attach live values + per-leaf verdicts.
-    let condition_summary = trace(&state.pool, user_id, &condition).await;
+    let condition_summary = trace(&ctx, &condition).await;
 
     // Monitors / groups referenced in the condition tree.
     let mut monitors_referenced = Vec::new();
@@ -165,7 +166,7 @@ fn compute_cooldown(rule: &Rule, now: DateTime<Utc>, would_match_now: bool) -> C
     }
 }
 
-async fn trace(pool: &sqlx::PgPool, user_id: Uuid, condition: &Condition) -> Value {
+async fn trace(ctx: &EvalCtx<'_>, condition: &Condition) -> Value {
     match condition {
         Condition::Comparison {
             field,
@@ -175,9 +176,9 @@ async fn trace(pool: &sqlx::PgPool, user_id: Uuid, condition: &Condition) -> Val
         } => {
             let parsed = field::parse(field);
             let (actual, verdict, parse_error) = match &parsed {
-                Ok(r) => match field::fetch(pool, user_id, r).await {
+                Ok(r) => match field::fetch(ctx, r).await {
                     Ok(live) => {
-                        let verdict = compare_for_trace(&live, *operator, value);
+                        let verdict = compare(&live, *operator, value);
                         (field_value_to_json(&live), verdict, None)
                     }
                     Err(e) => (Value::Null, false, Some(format!("fetch error: {e}"))),
@@ -200,7 +201,7 @@ async fn trace(pool: &sqlx::PgPool, user_id: Uuid, condition: &Condition) -> Val
             let mut any = false;
             let mut all = true;
             for c in children {
-                let t = Box::pin(trace(pool, user_id, c)).await;
+                let t = Box::pin(trace(ctx, c)).await;
                 let v = t.get("verdict").and_then(|x| x.as_bool()).unwrap_or(false);
                 any = any || v;
                 all = all && v;
@@ -226,45 +227,6 @@ fn field_value_to_json(v: &FieldValue) -> Value {
         FieldValue::Bool(b) => Value::Bool(*b),
         FieldValue::Number(n) => json!(n),
         FieldValue::Null => Value::Null,
-    }
-}
-
-fn compare_for_trace(live: &FieldValue, op: CompOp, expected: &Value) -> bool {
-    // Replicate evaluator::compare without re-importing private fn.
-    use FieldValue::*;
-    match (live, expected) {
-        (Null, _) => false,
-        (String(s), Value::String(t)) => match op {
-            CompOp::Eq => s == t,
-            CompOp::Neq => s != t,
-            CompOp::Contains => s.contains(t.as_str()),
-            CompOp::NotContains => !s.contains(t.as_str()),
-            _ => false,
-        },
-        (Bool(b), Value::Bool(t)) => match op {
-            CompOp::Eq => b == t,
-            CompOp::Neq => b != t,
-            _ => false,
-        },
-        (Number(n), Value::Number(t)) => {
-            let Some(t) = t.as_f64() else {
-                return false;
-            };
-            match op {
-                CompOp::Eq => (n - t).abs() < f64::EPSILON,
-                CompOp::Neq => (n - t).abs() >= f64::EPSILON,
-                CompOp::Gt => *n > t,
-                CompOp::Gte => *n >= t,
-                CompOp::Lt => *n < t,
-                CompOp::Lte => *n <= t,
-                _ => false,
-            }
-        }
-        (live, expected) => match op {
-            CompOp::Eq => format!("{live:?}") == format!("{expected:?}"),
-            CompOp::Neq => format!("{live:?}") != format!("{expected:?}"),
-            _ => false,
-        },
     }
 }
 

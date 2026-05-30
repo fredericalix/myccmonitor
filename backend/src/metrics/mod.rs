@@ -35,6 +35,7 @@ const WARP10_BATCH_SIZE: usize = 3;
 /// Splits `metrics_ids` into chunks of `WARP10_BATCH_SIZE` and runs the chunks
 /// in parallel — keeps each request small enough to fit comfortably under the
 /// 60 s HTTP timeout while letting the wall-clock cost scale with N/12 not N.
+#[allow(clippy::too_many_arguments)]
 pub async fn fetch_metrics(
     cfg: &Config,
     http: &reqwest::Client,

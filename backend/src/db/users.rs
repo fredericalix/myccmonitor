@@ -72,6 +72,7 @@ pub async fn find_by_id(pool: &PgPool, user_id: Uuid) -> Result<Option<User>, sq
 }
 
 pub async fn get_mcp_status(pool: &PgPool, user_id: Uuid) -> Result<McpStatus, sqlx::Error> {
+    #[allow(clippy::type_complexity)]
     let row: (
         bool,
         Option<Vec<u8>>,

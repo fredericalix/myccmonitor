@@ -7,10 +7,11 @@ use crate::db::{rule_firings, rules};
 use crate::rules::actions;
 use crate::rules::condition::{Action, Condition};
 use crate::rules::evaluator::evaluate;
+use crate::rules::field::EvalCtx;
 use crate::state::AppState;
 use crate::ws::{self, WsFrame};
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use dashmap::DashSet;
 use serde::Serialize;
 use std::sync::Arc;
@@ -206,7 +207,8 @@ pub async fn execute_rule(
     let actions: Vec<Action> = serde_json::from_value(rule.actions.clone())?;
 
     // Evaluate
-    let matched = evaluate(&state.pool, rule.user_id, &condition).await?;
+    let ctx = EvalCtx::new(&state.pool, rule.user_id);
+    let matched = evaluate(&ctx, &condition).await?;
     tracing::info!(
         rule_id = %rule.id,
         rule_name = %rule.name,
@@ -217,33 +219,32 @@ pub async fn execute_rule(
 
     // Cooldown: skip if last_fired_at + cooldown > now AND the verdict hasn't
     // changed (recovery-exempt: we always let a transition fire).
-    if matched {
-        if let (Some(last), Some(prev)) = (rule.last_fired_at, rule.last_outcome_state.as_ref()) {
-            let elapsed = Utc::now().signed_duration_since(last).num_seconds();
-            let in_cooldown = elapsed < rule.cooldown_seconds as i64;
-            let verdict_unchanged = prev == "matched";
-            if in_cooldown && verdict_unchanged {
-                tracing::info!(
-                    rule_id = %rule.id,
-                    rule_name = %rule.name,
-                    elapsed_seconds = elapsed,
-                    cooldown_seconds = rule.cooldown_seconds,
-                    "cooldown active and verdict unchanged; skipping"
-                );
-                rule_firings::insert(
-                    &state.pool,
-                    rule.id,
-                    rule.user_id,
-                    trigger.kind(),
-                    trigger.ref_id(),
-                    "cooldown_skipped",
-                    None,
-                    None,
-                )
-                .await?;
-                return Ok(Outcome::CooldownSkipped);
-            }
-        }
+    if matched
+        && cooldown_decision(
+            rule.last_fired_at,
+            rule.last_outcome_state.as_deref(),
+            rule.cooldown_seconds as i64,
+            Utc::now(),
+        ) == CooldownVerdict::Skip
+    {
+        tracing::info!(
+            rule_id = %rule.id,
+            rule_name = %rule.name,
+            cooldown_seconds = rule.cooldown_seconds,
+            "cooldown active and verdict unchanged; skipping"
+        );
+        rule_firings::insert(
+            &state.pool,
+            rule.id,
+            rule.user_id,
+            trigger.kind(),
+            trigger.ref_id(),
+            "cooldown_skipped",
+            None,
+            None,
+        )
+        .await?;
+        return Ok(Outcome::CooldownSkipped);
     }
 
     if !matched {
@@ -265,14 +266,20 @@ pub async fn execute_rule(
         return Ok(Outcome::NotMatched);
     }
 
-    // Matched: execute actions in parallel.
+    // Matched: execute actions in parallel (CLAUDE.md §10.2). InFlight is a
+    // concurrent set and each action targets a distinct monitor, so the
+    // anti-loop guard stays correct under concurrency. Results are folded back
+    // in original order.
+    let results = futures::future::join_all(actions.iter().map(|action| {
+        actions::execute(state, rule.id, rule.user_id, action, in_flight, chain_depth, None)
+    }))
+    .await;
+
     let mut summaries = Vec::with_capacity(actions.len());
     let mut had_error = false;
     let mut error_messages: Vec<String> = Vec::new();
-    for action in &actions {
-        match actions::execute(state, rule.id, rule.user_id, action, in_flight, chain_depth, None)
-            .await
-        {
+    for result in results {
+        match result {
             Ok(summary) => summaries.push(summary),
             Err(e) => {
                 tracing::error!(error = ?e, rule_id = %rule.id, "action execution failed");
@@ -335,15 +342,90 @@ pub async fn evaluate_dry(
 ) -> Result<DryRunResult> {
     let condition: Condition = serde_json::from_value(rule.condition.clone())?;
     let actions: Vec<Action> = serde_json::from_value(rule.actions.clone())?;
-    let matched = evaluate(&state.pool, rule.user_id, &condition).await?;
+    let ctx = EvalCtx::new(&state.pool, rule.user_id);
+    let matched = evaluate(&ctx, &condition).await?;
     Ok(DryRunResult {
         matched,
         actions_that_would_run: if matched { actions.len() } else { 0 },
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CooldownVerdict {
+    Fire,
+    Skip,
+}
+
+/// Cooldown decision for a rule whose condition just matched. Skips only when
+/// still inside the cooldown window *and* the previous outcome was also
+/// `matched` (recovery-exempt: a verdict transition always fires). Pure —
+/// unit-tested.
+pub(crate) fn cooldown_decision(
+    last_fired_at: Option<DateTime<Utc>>,
+    last_outcome_state: Option<&str>,
+    cooldown_seconds: i64,
+    now: DateTime<Utc>,
+) -> CooldownVerdict {
+    match (last_fired_at, last_outcome_state) {
+        (Some(last), Some(prev)) => {
+            let elapsed = now.signed_duration_since(last).num_seconds();
+            let in_cooldown = elapsed < cooldown_seconds;
+            let verdict_unchanged = prev == "matched";
+            if in_cooldown && verdict_unchanged {
+                CooldownVerdict::Skip
+            } else {
+                CooldownVerdict::Fire
+            }
+        }
+        _ => CooldownVerdict::Fire,
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct DryRunResult {
     pub matched: bool,
     pub actions_that_would_run: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_ever_match_fires() {
+        let now = Utc::now();
+        assert_eq!(cooldown_decision(None, None, 300, now), CooldownVerdict::Fire);
+    }
+
+    #[test]
+    fn repeat_match_inside_cooldown_skips() {
+        let now = Utc::now();
+        let last = now - chrono::Duration::seconds(60);
+        assert_eq!(
+            cooldown_decision(Some(last), Some("matched"), 300, now),
+            CooldownVerdict::Skip
+        );
+    }
+
+    #[test]
+    fn repeat_match_after_cooldown_fires() {
+        let now = Utc::now();
+        let last = now - chrono::Duration::seconds(400);
+        assert_eq!(
+            cooldown_decision(Some(last), Some("matched"), 300, now),
+            CooldownVerdict::Fire
+        );
+    }
+
+    #[test]
+    fn verdict_transition_is_recovery_exempt() {
+        let now = Utc::now();
+        let last = now - chrono::Duration::seconds(60);
+        // previous outcome was not "matched" → a fresh match always fires even
+        // inside the cooldown window
+        assert_eq!(
+            cooldown_decision(Some(last), Some("not_matched"), 300, now),
+            CooldownVerdict::Fire
+        );
+    }
 }

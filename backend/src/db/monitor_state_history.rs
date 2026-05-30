@@ -29,22 +29,27 @@ pub async fn insert(
 
 /// True iff the monitor has continuously held `state` for at least
 /// `seconds` seconds, based on the most recent state-transition history entry.
-/// Used by Phase 6 workflow engine for `state == X for 5m` conditions.
+/// Used by the workflow engine for `state == X for 5m` conditions. The
+/// `EXISTS` clause scopes the lookup to `user_id` so a crafted rule can never
+/// probe another tenant's state-change timing (CLAUDE.md §15).
 pub async fn state_held_for(
     pool: &PgPool,
+    user_id: Uuid,
     monitor_id: Uuid,
     state: &str,
     seconds: i64,
 ) -> Result<bool, sqlx::Error> {
     let row: Option<(DateTime<Utc>, String)> = sqlx::query_as(
         r#"
-        SELECT changed_at, state FROM monitor_state_history
-        WHERE monitor_id = $1
-        ORDER BY changed_at DESC
+        SELECT h.changed_at, h.state FROM monitor_state_history h
+        WHERE h.monitor_id = $1
+          AND EXISTS (SELECT 1 FROM monitors WHERE id = $1 AND user_id = $2)
+        ORDER BY h.changed_at DESC
         LIMIT 1
         "#,
     )
     .bind(monitor_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await?;
     match row {

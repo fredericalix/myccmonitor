@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use uuid::Uuid;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn dispatch(
     state: &AppState,
     channel_id: Uuid,

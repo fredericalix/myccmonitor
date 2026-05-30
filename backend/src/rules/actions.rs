@@ -79,6 +79,7 @@ pub async fn execute(
             }
 
             let mut chained_count = 0;
+            let mut chain_err: Option<anyhow::Error> = None;
             if let Some((effective_state, since)) = changed {
                 monitor_state_history::insert(
                     &state.pool,
@@ -113,20 +114,29 @@ pub async fn execute(
                     );
                 } else {
                     // Box::pin breaks the async recursion cycle for the compiler.
-                    chained_count = Box::pin(
-                        crate::rules::exec::trigger_for_monitor_with_depth(
-                            state,
-                            user_id,
-                            *target_monitor_id,
-                            Trigger::RuleChain { from_rule_id: rule_id },
-                            chain_depth + 1,
-                            in_flight,
-                        ),
-                    )
-                    .await?;
+                    // Capture the result instead of `?`-propagating it so the
+                    // in-flight guard is always released below, even on error —
+                    // otherwise a chain error would wedge this monitor in the
+                    // anti-loop set for the rest of the parent chain.
+                    match Box::pin(crate::rules::exec::trigger_for_monitor_with_depth(
+                        state,
+                        user_id,
+                        *target_monitor_id,
+                        Trigger::RuleChain { from_rule_id: rule_id },
+                        chain_depth + 1,
+                        in_flight,
+                    ))
+                    .await
+                    {
+                        Ok(c) => chained_count = c,
+                        Err(e) => chain_err = Some(e),
+                    }
                 }
             }
             in_flight.remove(*target_monitor_id);
+            if let Some(e) = chain_err {
+                return Err(e);
+            }
 
             Ok(json!({
                 "kind": "set_monitor_state",
